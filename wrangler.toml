@@ -10,16 +10,14 @@ workers_dev = true
 
 [durable_objects]
 bindings = [
-  { name = "RATE_LIMIT_DO", class_name = "RateLimitDO" }
+  { name = "RATE_LIMITER", class_name = "RateLimiter" }
 ]
 
 [[migrations]]
 tag = "v1"
-new_classes = ["RateLimitDO"]
+new_classes = ["RateLimiter"]
 
-[[services]]
-binding = "CONFIGURATION_DO"
-service = "config-rl-worker"
+
 # Automatically place your workloads in an optimal location to minimize latency.
 # If you are running back-end logic in a Worker, running it closer to your back-end infrastructure
 # rather than the end user may result in better performance.
