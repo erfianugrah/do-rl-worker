@@ -8,22 +8,22 @@ export class RateLimiter {
 
   async fetch(request) {
     console.log('RateLimiter: Received request');
-    let config;
+    let rule;
     try {
-      config = JSON.parse(request.headers.get('X-Rate-Limit-Config'));
+      rule = JSON.parse(request.headers.get('X-Rate-Limit-Config'));
     } catch (error) {
-      console.error('RateLimiter: Error parsing config:', error);
-      return new Response(JSON.stringify({ error: 'Config parsing error' }), {
+      console.error('RateLimiter: Error parsing rule:', error);
+      return new Response(JSON.stringify({ error: 'Rule parsing error' }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });
     }
 
-    console.log('RateLimiter: Received config:', JSON.stringify(config, null, 2));
+    console.log('RateLimiter: Received rule:', JSON.stringify(rule, null, 2));
 
-    if (!config || !config.rateLimit || !config.rateLimit.ipLimit) {
-      console.error('RateLimiter: Invalid or missing configuration');
-      return new Response(JSON.stringify({ error: 'Invalid or missing configuration' }), {
+    if (!rule || !rule.rateLimit || !rule.rateLimit.limit) {
+      console.error('RateLimiter: Invalid or missing rule');
+      return new Response(JSON.stringify({ error: 'Invalid or missing rule' }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -31,111 +31,73 @@ export class RateLimiter {
 
     // Check if this is a rate limit info request
     if (request.url.endsWith('/_ratelimit')) {
-      return this.getRateLimitInfo(request, config);
+      return this.getRateLimitInfo(request, rule);
     }
 
     try {
-      const ip = request.headers.get('CF-Connecting-IP');
-      console.log('RateLimiter: Client IP:', ip);
-      const ipKey = `rate_limit:ip:${ip}`;
       const now = Math.floor(Date.now() / 1000);
 
-      let ipBucket = await this.getBucket(ipKey, config.rateLimit.ipLimit, now);
-      ipBucket = this.refillBucket(
-        ipBucket,
-        config.rateLimit.ipLimit,
-        config.rateLimit.ipPeriod,
-        now
-      );
-
-      console.log('RateLimiter: IP bucket:', JSON.stringify(ipBucket, null, 2));
-
-      let fingerprintBucket = null;
-      let fingerprint = null;
-      if (config.rateLimit.limit && config.fingerprint) {
+      let bucket;
+      if (rule.fingerprint && rule.fingerprint.parameters) {
         console.log('RateLimiter: Generating fingerprint');
-        fingerprint = await generateFingerprint(request, this.env, config.fingerprint);
+        const fingerprint = await generateFingerprint(request, this.env, rule.fingerprint);
         console.log('RateLimiter: Generated fingerprint:', fingerprint);
-        const fingerprintKey = `rate_limit:fingerprint:${fingerprint}`;
-        fingerprintBucket = await this.getBucket(fingerprintKey, config.rateLimit.limit, now);
-        fingerprintBucket = this.refillBucket(
-          fingerprintBucket,
-          config.rateLimit.limit,
-          config.rateLimit.period,
-          now
-        );
-        console.log('RateLimiter: Fingerprint bucket:', JSON.stringify(fingerprintBucket, null, 2));
+        const fingerprintKey = `rate_limit:${rule.name}:fingerprint:${fingerprint}`;
+        bucket = await this.getBucket(fingerprintKey, rule.rateLimit.limit, now);
+      } else {
+        const ip = request.headers.get('CF-Connecting-IP');
+        console.log('RateLimiter: Client IP:', ip);
+        const ipKey = `rate_limit:${rule.name}:ip:${ip}`;
+        bucket = await this.getBucket(ipKey, rule.rateLimit.limit, now);
       }
 
-      const isAllowed =
-        ipBucket.tokens >= 1 && (!fingerprintBucket || fingerprintBucket.tokens >= 1);
+      bucket = this.refillBucket(bucket, rule.rateLimit.limit, rule.rateLimit.period, now);
+
+      console.log('RateLimiter: Bucket:', JSON.stringify(bucket, null, 2));
+
+      const isAllowed = bucket.tokens >= 1;
 
       if (isAllowed) {
         console.log('RateLimiter: Request allowed');
-        ipBucket.tokens -= 1;
-        await this.state.storage.put(ipKey, ipBucket);
-        if (fingerprintBucket) {
-          fingerprintBucket.tokens -= 1;
-          await this.state.storage.put(`rate_limit:fingerprint:${fingerprint}`, fingerprintBucket);
-        }
+        bucket.tokens -= 1;
+        await this.state.storage.put(bucket.key, bucket);
 
         const resetTime = Math.ceil(
-          now +
-            Math.max(
-              (1 - ipBucket.tokens) / (config.rateLimit.ipLimit / config.rateLimit.ipPeriod),
-              fingerprintBucket
-                ? (1 - fingerprintBucket.tokens) /
-                    (config.rateLimit.limit / config.rateLimit.period)
-                : 0
-            )
+          now + (1 - bucket.tokens) / (rule.rateLimit.limit / rule.rateLimit.period)
         );
 
         return new Response(
           JSON.stringify({
             allowed: true,
-            remaining: Math.min(
-              ipBucket.tokens,
-              fingerprintBucket ? fingerprintBucket.tokens : Infinity
-            ),
-            limit: Math.min(config.rateLimit.ipLimit, config.rateLimit.limit || Infinity),
-            period: Math.max(config.rateLimit.ipPeriod, config.rateLimit.period || 0),
+            remaining: bucket.tokens,
+            limit: rule.rateLimit.limit,
+            period: rule.rateLimit.period,
             reset: resetTime,
           }),
           {
             status: 200,
             headers: {
               'Content-Type': 'application/json',
-              'X-Rate-Limit-Remaining': Math.min(
-                ipBucket.tokens,
-                fingerprintBucket ? fingerprintBucket.tokens : Infinity
-              ).toFixed(6),
-              'X-Rate-Limit-Limit': Math.min(
-                config.rateLimit.ipLimit,
-                config.rateLimit.limit || Infinity
-              ).toString(),
-              'X-Rate-Limit-Period': Math.max(
-                config.rateLimit.ipPeriod,
-                config.rateLimit.period || 0
-              ).toString(),
+              'X-Rate-Limit-Remaining': bucket.tokens.toFixed(6),
+              'X-Rate-Limit-Limit': rule.rateLimit.limit.toString(),
+              'X-Rate-Limit-Period': rule.rateLimit.period.toString(),
               'X-Rate-Limit-Reset': resetTime.toString(),
             },
           }
         );
       } else {
         console.log('RateLimiter: Rate limit exceeded');
-        const retryAfter = Math.max(
-          (1 - ipBucket.tokens) / (config.rateLimit.ipLimit / config.rateLimit.ipPeriod),
-          fingerprintBucket
-            ? (1 - fingerprintBucket.tokens) / (config.rateLimit.limit / config.rateLimit.period)
-            : 0
+        const retryAfter = (
+          (1 - bucket.tokens) /
+          (rule.rateLimit.limit / rule.rateLimit.period)
         ).toFixed(3);
 
         return new Response(
           JSON.stringify({
             allowed: false,
             retryAfter: parseFloat(retryAfter),
-            limit: Math.min(config.rateLimit.ipLimit, config.rateLimit.limit || Infinity),
-            period: Math.max(config.rateLimit.ipPeriod, config.rateLimit.period || 0),
+            limit: rule.rateLimit.limit,
+            period: rule.rateLimit.period,
             reset: Math.ceil(now + parseFloat(retryAfter)),
           }),
           {
@@ -143,14 +105,8 @@ export class RateLimiter {
             headers: {
               'Content-Type': 'application/json',
               'Retry-After': retryAfter,
-              'X-Rate-Limit-Limit': Math.min(
-                config.rateLimit.ipLimit,
-                config.rateLimit.limit || Infinity
-              ).toString(),
-              'X-Rate-Limit-Period': Math.max(
-                config.rateLimit.ipPeriod,
-                config.rateLimit.period || 0
-              ).toString(),
+              'X-Rate-Limit-Limit': rule.rateLimit.limit.toString(),
+              'X-Rate-Limit-Period': rule.rateLimit.period.toString(),
               'X-Rate-Limit-Reset': Math.ceil(now + parseFloat(retryAfter)).toString(),
             },
           }
@@ -165,82 +121,41 @@ export class RateLimiter {
     }
   }
 
-  async getRateLimitInfo(request, config) {
+  async getRateLimitInfo(request, rule) {
     console.log('RateLimiter: Getting rate limit info');
 
     try {
-      const ip = request.headers.get('CF-Connecting-IP');
-      console.log('RateLimiter: Client IP for info:', ip);
-      const ipKey = `rate_limit:ip:${ip}`;
       const now = Math.floor(Date.now() / 1000);
 
-      let ipBucket = await this.getBucket(ipKey, config.rateLimit.ipLimit, now);
-      ipBucket = this.refillBucket(
-        ipBucket,
-        config.rateLimit.ipLimit,
-        config.rateLimit.ipPeriod,
-        now
-      );
-
-      console.log('RateLimiter: IP bucket for info:', JSON.stringify(ipBucket, null, 2));
-
-      let fingerprintBucket = null;
-      let fingerprint = null;
-      if (config.rateLimit.limit && config.fingerprint) {
+      let bucket;
+      if (rule.fingerprint && rule.fingerprint.parameters) {
         console.log('RateLimiter: Generating fingerprint for info');
-        fingerprint = await generateFingerprint(request, this.env, config.fingerprint);
+        const fingerprint = await generateFingerprint(request, this.env, rule.fingerprint);
         console.log('RateLimiter: Generated fingerprint for info:', fingerprint);
-        const fingerprintKey = `rate_limit:fingerprint:${fingerprint}`;
-        fingerprintBucket = await this.getBucket(fingerprintKey, config.rateLimit.limit, now);
-        fingerprintBucket = this.refillBucket(
-          fingerprintBucket,
-          config.rateLimit.limit,
-          config.rateLimit.period,
-          now
-        );
-        console.log(
-          'RateLimiter: Fingerprint bucket for info:',
-          JSON.stringify(fingerprintBucket, null, 2)
-        );
+        const fingerprintKey = `rate_limit:${rule.name}:fingerprint:${fingerprint}`;
+        bucket = await this.getBucket(fingerprintKey, rule.rateLimit.limit, now);
+      } else {
+        const ip = request.headers.get('CF-Connecting-IP');
+        console.log('RateLimiter: Client IP for info:', ip);
+        const ipKey = `rate_limit:${rule.name}:ip:${ip}`;
+        bucket = await this.getBucket(ipKey, rule.rateLimit.limit, now);
       }
+
+      bucket = this.refillBucket(bucket, rule.rateLimit.limit, rule.rateLimit.period, now);
+
+      console.log('RateLimiter: Bucket for info:', JSON.stringify(bucket, null, 2));
 
       const resetTime = Math.ceil(
         now +
-          Math.max(
-            (config.rateLimit.ipLimit - ipBucket.tokens) /
-              (config.rateLimit.ipLimit / config.rateLimit.ipPeriod),
-            fingerprintBucket
-              ? (config.rateLimit.limit - fingerprintBucket.tokens) /
-                  (config.rateLimit.limit / config.rateLimit.period)
-              : 0
-          )
+          (rule.rateLimit.limit - bucket.tokens) / (rule.rateLimit.limit / rule.rateLimit.period)
       );
 
       return new Response(
         JSON.stringify({
-          ip: {
-            limit: config.rateLimit.ipLimit,
-            remaining: ipBucket.tokens,
-            reset: resetTime,
-            period: config.rateLimit.ipPeriod,
-          },
-          fingerprint: fingerprintBucket
-            ? {
-                limit: config.rateLimit.limit,
-                remaining: fingerprintBucket.tokens,
-                reset: resetTime,
-                period: config.rateLimit.period,
-              }
-            : null,
-          combined: {
-            limit: Math.min(config.rateLimit.ipLimit, config.rateLimit.limit || Infinity),
-            remaining: Math.min(
-              ipBucket.tokens,
-              fingerprintBucket ? fingerprintBucket.tokens : Infinity
-            ),
-            reset: resetTime,
-            period: Math.max(config.rateLimit.ipPeriod, config.rateLimit.period || 0),
-          },
+          limit: rule.rateLimit.limit,
+          remaining: bucket.tokens,
+          reset: resetTime,
+          period: rule.rateLimit.period,
         }),
         {
           status: 200,
@@ -260,7 +175,7 @@ export class RateLimiter {
     let bucket = await this.state.storage.get(key);
     if (!bucket) {
       console.log(`RateLimiter: Creating new bucket for key ${key}`);
-      bucket = { tokens: limit, lastRefill: now };
+      bucket = { key, tokens: limit, lastRefill: now };
     }
     return bucket;
   }

@@ -1,9 +1,6 @@
 import { RateLimiter } from './rate-limiter.js';
 import { serveRateLimitPage, serveRateLimitInfoPage } from './staticpages.js';
 
-// Hardcoded path for rate limit info
-const RATE_LIMIT_INFO_PATH = '/_ratelimit';
-
 export default {
   async fetch(request, env, ctx) {
     console.log('Received request for URL:', request.url);
@@ -22,29 +19,12 @@ export default {
       console.log('Received raw config:', JSON.stringify(rawConfig, null, 2));
 
       // If no rules are configured, pass through the request
-      if (!rawConfig || Object.keys(rawConfig).length === 0) {
+      if (!rawConfig || !rawConfig.rules || rawConfig.rules.length === 0) {
         console.log('No rate limiting rules configured, passing through request');
         return fetch(request);
       }
 
-      // Parse config
-      config = {
-        rateLimit: {
-          ipLimit: parseInt(rawConfig.rateLimit.ipLimit, 10),
-          ipPeriod: parseInt(rawConfig.rateLimit.ipPeriod, 10),
-        },
-        requestMatch: rawConfig.requestMatch,
-      };
-
-      // Add fingerprint config only if it's present in rawConfig
-      if (rawConfig.rateLimit.limit && rawConfig.rateLimit.period) {
-        config.rateLimit.limit = parseInt(rawConfig.rateLimit.limit, 10);
-        config.rateLimit.period = parseInt(rawConfig.rateLimit.period, 10);
-        config.fingerprint = {
-          parameters: rawConfig.fingerprint.parameters || ['clientIP'],
-        };
-      }
-
+      config = rawConfig;
       console.log('Parsed config:', JSON.stringify(config, null, 2));
     } catch (error) {
       console.error('Configuration error:', error);
@@ -53,24 +33,27 @@ export default {
 
     const url = new URL(request.url);
 
-    // If config matches the request, apply rate limiting
-    if (
-      config.requestMatch.hostname === url.hostname &&
-      (!config.requestMatch.path || url.pathname.startsWith(config.requestMatch.path))
-    ) {
-      console.log('Request matches rate limit criteria');
+    // Find the first matching rule
+    const matchingRule = config.rules.find(
+      (rule) =>
+        rule.requestMatch.hostname === url.hostname &&
+        (!rule.requestMatch.path || url.pathname.startsWith(rule.requestMatch.path))
+    );
+
+    if (matchingRule) {
+      console.log('Request matches rate limit criteria for rule:', matchingRule.name);
 
       const rateLimiterId = env.RATE_LIMITER.idFromName('global');
       const rateLimiter = env.RATE_LIMITER.get(rateLimiterId);
 
       // Serve rate limit info page
-      if (url.pathname === RATE_LIMIT_INFO_PATH) {
+      if (url.pathname === env.RATE_LIMIT_INFO_PATH) {
         console.log('Serving rate limit info page');
         const rateLimiterRequest = new Request(request.url, {
           method: request.method,
           headers: {
             ...request.headers,
-            'X-Rate-Limit-Config': JSON.stringify(config),
+            'X-Rate-Limit-Config': JSON.stringify(matchingRule),
           },
         });
         const rateLimitInfoResponse = await rateLimiter.fetch(rateLimiterRequest);
@@ -84,7 +67,7 @@ export default {
           method: request.method,
           headers: {
             ...request.headers,
-            'X-Rate-Limit-Config': JSON.stringify(config),
+            'X-Rate-Limit-Config': JSON.stringify(matchingRule),
           },
           body: request.body,
         });
@@ -123,8 +106,8 @@ export default {
       }
     }
 
-    // If request doesn't match config criteria, pass through to origin
-    console.log('Request does not match rate limit criteria, passing through to origin');
+    // If request doesn't match any rule, pass through to origin
+    console.log('Request does not match any rate limit criteria, passing through to origin');
     return fetch(request);
   },
 };
