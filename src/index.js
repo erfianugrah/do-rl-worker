@@ -22,22 +22,21 @@ export default {
         rateLimit: {
           limit: parseInt(rawConfig.rateLimit.limit, 10),
           period: parseInt(rawConfig.rateLimit.period, 10),
+          ipLimit: rawConfig.rateLimit.ipLimit ? parseInt(rawConfig.rateLimit.ipLimit, 10) : null,
+          ipPeriod: rawConfig.rateLimit.ipPeriod
+            ? parseInt(rawConfig.rateLimit.ipPeriod, 10)
+            : null,
         },
         requestMatch: rawConfig.requestMatch,
         fingerprint: {
-          baseline: Array.isArray(rawConfig.fingerprint.baseline)
-            ? rawConfig.fingerprint.baseline
-            : [],
-          additional: Array.isArray(rawConfig.fingerprint.additional)
-            ? rawConfig.fingerprint.additional
-            : [],
+          parameters: rawConfig.fingerprint.parameters || ['clientIP'],
         },
       };
 
       console.log('Parsed config:', JSON.stringify(config, null, 2));
     } catch (error) {
       console.error('Configuration error:', error);
-      return new Response('Internal Server Error', { status: 500 });
+      return fetch(request); // Pass through on config error
     }
 
     const url = new URL(request.url);
@@ -67,7 +66,6 @@ export default {
       const rateLimiterId = env.RATE_LIMITER.idFromName('global');
       const rateLimiter = env.RATE_LIMITER.get(rateLimiterId);
 
-      console.log('Calling RateLimiter fetch with config:', JSON.stringify(config, null, 2));
       try {
         const rateLimiterRequest = new Request(request.url, {
           method: request.method,
@@ -78,7 +76,6 @@ export default {
           body: request.body,
         });
         const rateLimitResponse = await rateLimiter.fetch(rateLimiterRequest);
-        console.log('Rate limit response status:', rateLimitResponse.status);
 
         if (rateLimitResponse.status === 429) {
           console.log('Rate limit exceeded');
@@ -111,7 +108,7 @@ export default {
         return newResponse;
       } catch (error) {
         console.error('Rate limiting error:', error);
-        return new Response('Internal Server Error', { status: 500 });
+        return fetch(request); // Pass through on rate limiting error
       }
     }
 

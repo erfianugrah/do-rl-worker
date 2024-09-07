@@ -20,7 +20,7 @@ export class RateLimiter {
 
     console.log('RateLimiter: Received config:', JSON.stringify(config, null, 2));
 
-    if (!config || !config.fingerprint || !config.rateLimit) {
+    if (!config || !config.rateLimit) {
       console.error('RateLimiter: Invalid or missing configuration');
       return new Response(null, {
         status: 200,
@@ -28,39 +28,68 @@ export class RateLimiter {
       });
     }
 
+    // Ensure fingerprint config exists, even if empty
+    config.fingerprint = config.fingerprint || { parameters: ['clientIP'] };
+
     try {
       const fingerprint = await generateFingerprint(request, this.env, config.fingerprint);
-      console.log('RateLimiter: Generated fingerprint:', fingerprint);
+      const ip = request.headers.get('CF-Connecting-IP');
+      const token = request.headers.get('X-Rate-Limit-Token');
 
-      const key = `rate_limit:${fingerprint}`;
-      let bucket = await this.state.storage.get(key);
+      const fingerprintKey = `rate_limit:fingerprint:${fingerprint}`;
+      const ipKey = `rate_limit:ip:${ip}`;
+
       const now = Math.floor(Date.now() / 1000);
 
-      if (!bucket) {
-        console.log('RateLimiter: No existing bucket, creating new one');
-        bucket = { tokens: config.rateLimit.limit, lastRefill: now };
-      } else {
-        console.log('RateLimiter: Existing bucket:', bucket);
-        const elapsed = Math.max(0, now - bucket.lastRefill);
-        const rate = config.rateLimit.limit / config.rateLimit.period;
-        bucket.tokens = Math.min(config.rateLimit.limit, bucket.tokens + elapsed * rate);
-        bucket.lastRefill = now;
+      let fingerprintBucket = await this.getBucket(fingerprintKey, config.rateLimit.limit, now);
+      let ipBucket = config.rateLimit.ipLimit
+        ? await this.getBucket(ipKey, config.rateLimit.ipLimit, now)
+        : null;
+
+      fingerprintBucket = this.refillBucket(
+        fingerprintBucket,
+        config.rateLimit.limit,
+        config.rateLimit.period,
+        now
+      );
+      if (ipBucket) {
+        ipBucket = this.refillBucket(
+          ipBucket,
+          config.rateLimit.ipLimit,
+          config.rateLimit.ipPeriod || config.rateLimit.period,
+          now
+        );
       }
 
-      console.log('RateLimiter: Current tokens:', bucket.tokens);
+      console.log('RateLimiter: Fingerprint bucket:', fingerprintBucket);
+      if (ipBucket) console.log('RateLimiter: IP bucket:', ipBucket);
 
-      if (bucket.tokens >= 1) {
+      if (fingerprintBucket.tokens >= 1 && (!ipBucket || ipBucket.tokens >= 1)) {
         console.log('RateLimiter: Request allowed');
-        bucket.tokens -= 1;
-        await this.state.storage.put(key, bucket);
+        fingerprintBucket.tokens -= 1;
+        if (ipBucket) ipBucket.tokens -= 1;
+        await this.state.storage.put(fingerprintKey, fingerprintBucket);
+        if (ipBucket) await this.state.storage.put(ipKey, ipBucket);
 
         const resetTime = Math.ceil(
-          now + (1 - bucket.tokens) / (config.rateLimit.limit / config.rateLimit.period)
+          now +
+            Math.max(
+              (1 - fingerprintBucket.tokens) / (config.rateLimit.limit / config.rateLimit.period),
+              ipBucket
+                ? (1 - ipBucket.tokens) /
+                    (config.rateLimit.ipLimit /
+                      (config.rateLimit.ipPeriod || config.rateLimit.period))
+                : 0
+            )
         );
+
         return new Response(null, {
           status: 200,
           headers: {
-            'X-Rate-Limit-Remaining': bucket.tokens.toFixed(6),
+            'X-Rate-Limit-Remaining': Math.min(
+              fingerprintBucket.tokens,
+              ipBucket ? ipBucket.tokens : Infinity
+            ).toFixed(6),
             'X-Rate-Limit-Limit': config.rateLimit.limit.toString(),
             'X-Rate-Limit-Period': config.rateLimit.period.toString(),
             'X-Rate-Limit-Reset': resetTime.toString(),
@@ -69,9 +98,13 @@ export class RateLimiter {
       } else {
         console.log('RateLimiter: Rate limit exceeded');
         const retryAfter = Math.max(
-          0,
-          (1 - bucket.tokens) / (config.rateLimit.limit / config.rateLimit.period)
+          (1 - fingerprintBucket.tokens) / (config.rateLimit.limit / config.rateLimit.period),
+          ipBucket
+            ? (1 - ipBucket.tokens) /
+                (config.rateLimit.ipLimit / (config.rateLimit.ipPeriod || config.rateLimit.period))
+            : 0
         ).toFixed(3);
+
         return new Response(null, {
           status: 429,
           headers: {
@@ -91,6 +124,22 @@ export class RateLimiter {
     }
   }
 
+  async getBucket(key, limit, now) {
+    let bucket = await this.state.storage.get(key);
+    if (!bucket) {
+      bucket = { tokens: limit, lastRefill: now };
+    }
+    return bucket;
+  }
+
+  refillBucket(bucket, limit, period, now) {
+    const elapsed = Math.max(0, now - bucket.lastRefill);
+    const rate = limit / period;
+    bucket.tokens = Math.min(limit, bucket.tokens + elapsed * rate);
+    bucket.lastRefill = now;
+    return bucket;
+  }
+
   async getRateLimitInfo(request) {
     let config;
     try {
@@ -103,7 +152,7 @@ export class RateLimiter {
       });
     }
 
-    if (!config || !config.fingerprint || !config.rateLimit) {
+    if (!config || !config.rateLimit) {
       console.error('RateLimiter: Invalid or missing configuration');
       return new Response(JSON.stringify({ error: 'Invalid or missing configuration' }), {
         status: 200,
@@ -111,41 +160,58 @@ export class RateLimiter {
       });
     }
 
-    try {
-      const fingerprint = await generateFingerprint(request, this.env, config.fingerprint);
-      const key = `rate_limit:${fingerprint}`;
-      let bucket = await this.state.storage.get(key);
-      const now = Math.floor(Date.now() / 1000);
+    // Ensure fingerprint config exists, even if empty
+    config.fingerprint = config.fingerprint || { parameters: ['clientIP'] };
 
-      if (!bucket) {
-        bucket = { tokens: config.rateLimit.limit, lastRefill: now };
-      } else {
-        const elapsed = Math.max(0, now - bucket.lastRefill);
-        const rate = config.rateLimit.limit / config.rateLimit.period;
-        bucket.tokens = Math.min(config.rateLimit.limit, bucket.tokens + elapsed * rate);
-      }
+    const fingerprint = await generateFingerprint(request, this.env, config.fingerprint);
+    const ip = request.headers.get('CF-Connecting-IP');
 
-      return new Response(
-        JSON.stringify({
-          limit: config.rateLimit.limit,
-          period: config.rateLimit.period,
-          remaining: Math.floor(bucket.tokens),
-          reset: Math.ceil(
-            now +
-              (config.rateLimit.limit - bucket.tokens) /
-                (config.rateLimit.limit / config.rateLimit.period)
-          ),
-        }),
-        {
-          headers: { 'Content-Type': 'application/json' },
-        }
+    const fingerprintKey = `rate_limit:fingerprint:${fingerprint}`;
+    const ipKey = `rate_limit:ip:${ip}`;
+
+    const now = Math.floor(Date.now() / 1000);
+
+    let fingerprintBucket = await this.getBucket(fingerprintKey, config.rateLimit.limit, now);
+    let ipBucket = config.rateLimit.ipLimit
+      ? await this.getBucket(ipKey, config.rateLimit.ipLimit, now)
+      : null;
+
+    fingerprintBucket = this.refillBucket(
+      fingerprintBucket,
+      config.rateLimit.limit,
+      config.rateLimit.period,
+      now
+    );
+    if (ipBucket) {
+      ipBucket = this.refillBucket(
+        ipBucket,
+        config.rateLimit.ipLimit,
+        config.rateLimit.ipPeriod || config.rateLimit.period,
+        now
       );
-    } catch (error) {
-      console.error('RateLimiter: Unexpected error:', error);
-      return new Response(JSON.stringify({ error: 'Unexpected error' }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
     }
+
+    return new Response(
+      JSON.stringify({
+        limit: config.rateLimit.limit,
+        period: config.rateLimit.period,
+        remaining: Math.min(fingerprintBucket.tokens, ipBucket ? ipBucket.tokens : Infinity),
+        reset: Math.ceil(
+          now +
+            Math.max(
+              (config.rateLimit.limit - fingerprintBucket.tokens) /
+                (config.rateLimit.limit / config.rateLimit.period),
+              ipBucket
+                ? (config.rateLimit.ipLimit - ipBucket.tokens) /
+                    (config.rateLimit.ipLimit /
+                      (config.rateLimit.ipPeriod || config.rateLimit.period))
+                : 0
+            )
+        ),
+      }),
+      {
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
   }
 }

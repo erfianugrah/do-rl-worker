@@ -7,24 +7,35 @@ export async function generateFingerprint(request, env, fingerprintConfig) {
   const clientIP = request.headers.get('CF-Connecting-IP') || '';
   const timestamp = Math.floor(Date.now() / 1000); // Current time in seconds
 
-  // Gather baseline components
-  const baselineComponents = fingerprintConfig.baseline.map((param) => {
-    if (param === 'clientIP') return clientIP;
-    if (param.startsWith('cf.')) return cf[param.split('.')[1]] || '';
-    return request.headers.get(param) || '';
+  const parameters = fingerprintConfig.parameters || ['clientIP'];
+
+  const components = parameters.map((param) => {
+    switch (param) {
+      case 'clientIP':
+        return clientIP;
+      case 'user-agent':
+        return request.headers.get('User-Agent') || '';
+      case 'cf-device-type':
+        return request.headers.get('CF-Device-Type') || '';
+      default:
+        if (param.startsWith('cf.')) {
+          const cfParam = param.split('.').slice(1);
+          return cfParam.reduce((obj, key) => obj && obj[key], cf) || '';
+        }
+        return '';
+    }
   });
 
-  // Gather additional components
-  const additionalComponents = fingerprintConfig.additional.map((param) => {
-    if (param.startsWith('cf.')) return cf[param.split('.')[1]] || '';
-    return request.headers.get(param) || '';
-  });
+  // Ensure clientIP is always included
+  if (!components.includes(clientIP)) {
+    components.unshift(clientIP);
+  }
 
-  // Combine all components
-  const allComponents = [...baselineComponents, ...additionalComponents, timestamp.toString()];
+  // Add timestamp
+  components.push(timestamp.toString());
 
-  console.log('Fingerprint components:', allComponents);
+  console.log('Fingerprint components:', components);
 
   // Generate the fingerprint
-  return await hashValue(allComponents.join('|'));
+  return await hashValue(components.join('|'));
 }
