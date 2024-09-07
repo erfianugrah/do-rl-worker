@@ -2,7 +2,7 @@ import { RateLimiter } from './rate-limiter.js';
 import { serveRateLimitPage, serveRateLimitInfoPage } from './staticpages.js';
 
 // Hardcoded path for rate limit info
-const RATE_LIMIT_INFO_PATH = env.RATE_LIMIT_INFO_PATH;
+const RATE_LIMIT_INFO_PATH = '/_ratelimit';
 
 export default {
   async fetch(request, env, ctx) {
@@ -10,28 +10,40 @@ export default {
 
     let config;
     try {
-      // Fetch config from UI worker
+      // Fetch config from UI worker using Service Binding
+      console.log('Fetching config from UI worker');
       const configResponse = await env.UI_WORKER.fetch('https://ui-worker.example.com/config');
       if (!configResponse.ok) {
-        throw new Error('Failed to fetch config from UI worker');
+        throw new Error(
+          `Failed to fetch config from UI worker: ${configResponse.status} ${configResponse.statusText}`
+        );
       }
       const rawConfig = await configResponse.json();
+      console.log('Received raw config:', JSON.stringify(rawConfig, null, 2));
+
+      // If no rules are configured, pass through the request
+      if (!rawConfig || Object.keys(rawConfig).length === 0) {
+        console.log('No rate limiting rules configured, passing through request');
+        return fetch(request);
+      }
 
       // Parse config
       config = {
         rateLimit: {
-          limit: parseInt(rawConfig.rateLimit.limit, 10),
-          period: parseInt(rawConfig.rateLimit.period, 10),
-          ipLimit: rawConfig.rateLimit.ipLimit ? parseInt(rawConfig.rateLimit.ipLimit, 10) : null,
-          ipPeriod: rawConfig.rateLimit.ipPeriod
-            ? parseInt(rawConfig.rateLimit.ipPeriod, 10)
-            : null,
+          ipLimit: parseInt(rawConfig.rateLimit.ipLimit, 10),
+          ipPeriod: parseInt(rawConfig.rateLimit.ipPeriod, 10),
         },
         requestMatch: rawConfig.requestMatch,
-        fingerprint: {
-          parameters: rawConfig.fingerprint.parameters || ['clientIP'],
-        },
       };
+
+      // Add fingerprint config only if it's present in rawConfig
+      if (rawConfig.rateLimit.limit && rawConfig.rateLimit.period) {
+        config.rateLimit.limit = parseInt(rawConfig.rateLimit.limit, 10);
+        config.rateLimit.period = parseInt(rawConfig.rateLimit.period, 10);
+        config.fingerprint = {
+          parameters: rawConfig.fingerprint.parameters || ['clientIP'],
+        };
+      }
 
       console.log('Parsed config:', JSON.stringify(config, null, 2));
     } catch (error) {
@@ -48,10 +60,12 @@ export default {
     ) {
       console.log('Request matches rate limit criteria');
 
+      const rateLimiterId = env.RATE_LIMITER.idFromName('global');
+      const rateLimiter = env.RATE_LIMITER.get(rateLimiterId);
+
       // Serve rate limit info page
       if (url.pathname === RATE_LIMIT_INFO_PATH) {
-        const rateLimiterId = env.RATE_LIMITER.idFromName('global');
-        const rateLimiter = env.RATE_LIMITER.get(rateLimiterId);
+        console.log('Serving rate limit info page');
         const rateLimiterRequest = new Request(request.url, {
           method: request.method,
           headers: {
@@ -59,13 +73,12 @@ export default {
             'X-Rate-Limit-Config': JSON.stringify(config),
           },
         });
-        const rateLimitInfo = await rateLimiter.getRateLimitInfo(rateLimiterRequest);
+        const rateLimitInfoResponse = await rateLimiter.fetch(rateLimiterRequest);
+        const rateLimitInfo = await rateLimitInfoResponse.json();
         return serveRateLimitInfoPage(env, request, rateLimitInfo);
       }
 
-      const rateLimiterId = env.RATE_LIMITER.idFromName('global');
-      const rateLimiter = env.RATE_LIMITER.get(rateLimiterId);
-
+      console.log('Calling RateLimiter Durable Object');
       try {
         const rateLimiterRequest = new Request(request.url, {
           method: request.method,
@@ -77,13 +90,11 @@ export default {
         });
         const rateLimitResponse = await rateLimiter.fetch(rateLimiterRequest);
 
+        console.log('Rate limit response status:', rateLimitResponse.status);
+
         if (rateLimitResponse.status === 429) {
           console.log('Rate limit exceeded');
-          const rateLimitInfo = {
-            retryAfter: rateLimitResponse.headers.get('Retry-After'),
-            limit: config.rateLimit.limit,
-            period: config.rateLimit.period,
-          };
+          const rateLimitInfo = await rateLimitResponse.json();
           return serveRateLimitPage(env, request, rateLimitInfo);
         }
 
