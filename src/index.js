@@ -2,7 +2,7 @@ import { RateLimiter } from './rate-limiter.js';
 import { serveRateLimitPage, serveRateLimitInfoPage } from './staticpages.js';
 
 // Hardcoded path for rate limit info
-const RATE_LIMIT_INFO_PATH = '/_ratelimit';
+const RATE_LIMIT_INFO_PATH = env.RATE_LIMIT_INFO_PATH;
 
 export default {
   async fetch(request, env, ctx) {
