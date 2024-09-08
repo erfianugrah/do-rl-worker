@@ -1,4 +1,5 @@
 import { generateFingerprint } from './fingerprint.js';
+import { evaluateCondition } from './condition-evaluator.js';
 
 export class RateLimiter {
   constructor(state, env) {
@@ -119,6 +120,21 @@ export class RateLimiter {
         headers: { 'Content-Type': 'application/json' },
       });
     }
+  }
+
+  async evaluateRequestMatch(request, requestMatch) {
+    if (!requestMatch || !requestMatch.conditions || requestMatch.conditions.length === 0) {
+      return true; // If no conditions are specified, the request matches by default
+    }
+
+    for (const condition of requestMatch.conditions) {
+      const result = await evaluateCondition(request, condition);
+      if (!result) {
+        return false; // If any condition fails, the request doesn't match
+      }
+    }
+
+    return true; // All conditions passed
   }
 
   async getRateLimitInfo(request, rule) {

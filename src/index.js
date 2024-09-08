@@ -34,11 +34,7 @@ export default {
     const url = new URL(request.url);
 
     // Find the first matching rule
-    const matchingRule = config.rules.find(
-      (rule) =>
-        rule.requestMatch.hostname === url.hostname &&
-        (!rule.requestMatch.path || url.pathname.startsWith(rule.requestMatch.path))
-    );
+    const matchingRule = await findMatchingRule(request, config.rules);
 
     if (matchingRule) {
       console.log('Request matches rate limit criteria for rule:', matchingRule.name);
@@ -111,5 +107,29 @@ export default {
     return fetch(request);
   },
 };
+
+async function findMatchingRule(request, rules) {
+  for (const rule of rules) {
+    if (await evaluateRequestMatch(request, rule.requestMatch)) {
+      return rule;
+    }
+  }
+  return null;
+}
+
+async function evaluateRequestMatch(request, requestMatch) {
+  if (!requestMatch || !requestMatch.conditions || requestMatch.conditions.length === 0) {
+    return true; // If no conditions are specified, the request matches by default
+  }
+
+  for (const condition of requestMatch.conditions) {
+    const result = await evaluateCondition(request, condition);
+    if (!result) {
+      return false; // If any condition fails, the request doesn't match
+    }
+  }
+
+  return true; // All conditions passed
+}
 
 export { RateLimiter };
