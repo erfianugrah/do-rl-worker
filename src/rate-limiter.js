@@ -74,6 +74,7 @@ export class RateLimiter {
             limit: rule.rateLimit.limit,
             period: rule.rateLimit.period,
             reset: resetTime,
+            action: rule.action,
           }),
           {
             status: 200,
@@ -100,6 +101,7 @@ export class RateLimiter {
             limit: rule.rateLimit.limit,
             period: rule.rateLimit.period,
             reset: Math.ceil(now + parseFloat(retryAfter)),
+            action: rule.action,
           }),
           {
             status: 429,

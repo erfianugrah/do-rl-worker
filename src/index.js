@@ -1,5 +1,46 @@
 import { RateLimiter } from './rate-limiter.js';
 import { serveRateLimitPage, serveRateLimitInfoPage } from './staticpages.js';
+import { evaluateCondition } from './condition-evaluator.js';
+
+async function findMatchingRule(request, rules) {
+  for (const rule of rules) {
+    if (await evaluateRequestMatch(request, rule.requestMatch)) {
+      return rule;
+    }
+  }
+  return null;
+}
+
+async function evaluateRequestMatch(request, requestMatch) {
+  if (
+    !requestMatch ||
+    !requestMatch.conditions ||
+    Object.keys(requestMatch.conditions).length === 0
+  ) {
+    return true; // If no conditions are specified, the request matches by default
+  }
+
+  const logic = requestMatch.logic || 'AND'; // Default to AND if not specified
+  const conditions = Object.values(requestMatch.conditions);
+
+  if (logic === 'AND') {
+    for (const condition of conditions) {
+      if (!(await evaluateCondition(request, condition))) {
+        return false;
+      }
+    }
+    return true;
+  } else if (logic === 'OR') {
+    for (const condition of conditions) {
+      if (await evaluateCondition(request, condition)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  throw new Error(`Unknown logic operator: ${logic}`);
+}
 
 export default {
   async fetch(request, env, ctx) {
@@ -74,7 +115,34 @@ export default {
         if (rateLimitResponse.status === 429) {
           console.log('Rate limit exceeded');
           const rateLimitInfo = await rateLimitResponse.json();
-          return serveRateLimitPage(env, request, rateLimitInfo);
+
+          // Handle different actions
+          const actionType = matchingRule.action?.type || 'rateLimit'; // Default to rateLimit if not specified
+          switch (actionType) {
+            case 'log':
+              console.log('Logging rate limit exceed:', rateLimitInfo);
+              // Pass through the request
+              return fetch(request);
+            case 'simulate':
+              console.log('Simulating rate limit exceed:', rateLimitInfo);
+              // Pass through the request, but add a header to indicate simulation
+              const simulatedResponse = await fetch(request);
+              const newSimulatedResponse = new Response(simulatedResponse.body, simulatedResponse);
+              newSimulatedResponse.headers.set('X-Rate-Limit-Simulated', 'true');
+              return newSimulatedResponse;
+            case 'block':
+              return new Response('Forbidden', { status: 403 });
+            case 'rateLimit':
+              return serveRateLimitPage(env, request, rateLimitInfo);
+            case 'customResponse':
+              return new Response(matchingRule.action.body, {
+                status: matchingRule.action.statusCode,
+                headers: { 'Content-Type': 'application/json' },
+              });
+            default:
+              console.error('Unknown action type:', actionType);
+              return fetch(request);
+          }
         }
 
         // If rate limit not exceeded, forward the request
@@ -107,29 +175,5 @@ export default {
     return fetch(request);
   },
 };
-
-async function findMatchingRule(request, rules) {
-  for (const rule of rules) {
-    if (await evaluateRequestMatch(request, rule.requestMatch)) {
-      return rule;
-    }
-  }
-  return null;
-}
-
-async function evaluateRequestMatch(request, requestMatch) {
-  if (!requestMatch || !requestMatch.conditions || requestMatch.conditions.length === 0) {
-    return true; // If no conditions are specified, the request matches by default
-  }
-
-  for (const condition of requestMatch.conditions) {
-    const result = await evaluateCondition(request, condition);
-    if (!result) {
-      return false; // If any condition fails, the request doesn't match
-    }
-  }
-
-  return true; // All conditions passed
-}
 
 export { RateLimiter };
