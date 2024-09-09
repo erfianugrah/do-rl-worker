@@ -3,42 +3,66 @@ import { serveRateLimitPage, serveRateLimitInfoPage } from './staticpages.js';
 import { evaluateCondition } from './condition-evaluator.js';
 
 async function findMatchingRule(request, rules) {
+  console.log('Finding matching rule for request:', request.url);
   for (const rule of rules) {
-    if (await evaluateRequestMatch(request, rule.requestMatch)) {
+    console.log('Evaluating rule:', rule.name);
+    console.log('Rule details:', JSON.stringify(rule));
+    const matches = await evaluateRequestMatch(request, rule.requestMatch);
+    console.log(`Rule ${rule.name} matches: ${matches}`);
+    if (matches) {
+      console.log('Matching rule found:', rule.name);
       return rule;
     }
   }
+  console.log('No matching rule found');
   return null;
 }
 
 async function evaluateRequestMatch(request, requestMatch) {
-  if (
-    !requestMatch ||
-    !requestMatch.conditions ||
-    Object.keys(requestMatch.conditions).length === 0
-  ) {
-    return true; // If no conditions are specified, the request matches by default
+  console.log('Evaluating request match:', JSON.stringify(requestMatch));
+
+  if (!requestMatch) {
+    console.log('No requestMatch specified, request matches by default');
+    return true;
+  }
+
+  const conditions = Object.entries(requestMatch)
+    .filter(([key]) => key.startsWith('conditions['))
+    .map(([, value]) => value);
+
+  if (conditions.length === 0) {
+    console.log('No conditions specified, request matches by default');
+    return true;
   }
 
   const logic = requestMatch.logic || 'AND'; // Default to AND if not specified
-  const conditions = Object.values(requestMatch.conditions);
+  console.log('Request match logic:', logic);
 
   if (logic === 'AND') {
     for (const condition of conditions) {
-      if (!(await evaluateCondition(request, condition))) {
+      const result = await evaluateCondition(request, condition);
+      console.log(`Evaluating condition: ${JSON.stringify(condition)}, result: ${result}`);
+      if (!result) {
+        console.log('AND condition failed:', condition);
         return false;
       }
     }
+    console.log('All AND conditions passed');
     return true;
   } else if (logic === 'OR') {
     for (const condition of conditions) {
-      if (await evaluateCondition(request, condition)) {
+      const result = await evaluateCondition(request, condition);
+      console.log(`Evaluating condition: ${JSON.stringify(condition)}, result: ${result}`);
+      if (result) {
+        console.log('OR condition passed:', condition);
         return true;
       }
     }
+    console.log('No OR conditions passed');
     return false;
   }
 
+  console.error('Unknown logic operator:', logic);
   throw new Error(`Unknown logic operator: ${logic}`);
 }
 
@@ -78,7 +102,10 @@ export default {
     const matchingRule = await findMatchingRule(request, config.rules);
 
     if (matchingRule) {
-      console.log('Request matches rate limit criteria for rule:', matchingRule.name);
+      console.log('Request matches criteria for rule:', matchingRule.name);
+
+      const actionType = matchingRule.action?.type || 'rateLimit'; // Default to rateLimit if not specified
+      console.log('Action type:', actionType);
 
       const rateLimiterId = env.RATE_LIMITER.idFromName('global');
       const rateLimiter = env.RATE_LIMITER.get(rateLimiterId);
@@ -98,7 +125,7 @@ export default {
         return serveRateLimitInfoPage(env, request, rateLimitInfo);
       }
 
-      console.log('Calling RateLimiter Durable Object');
+      console.log('Checking rate limit');
       try {
         const rateLimiterRequest = new Request(request.url, {
           method: request.method,
@@ -109,47 +136,64 @@ export default {
           body: request.body,
         });
         const rateLimitResponse = await rateLimiter.fetch(rateLimiterRequest);
+        const rateLimitInfo = await rateLimitResponse.json();
 
-        console.log('Rate limit response status:', rateLimitResponse.status);
+        console.log('Rate limit response:', rateLimitInfo);
 
-        if (rateLimitResponse.status === 429) {
-          console.log('Rate limit exceeded');
-          const rateLimitInfo = await rateLimitResponse.json();
+        let response;
+        let statusCode;
 
-          // Handle different actions
-          const actionType = matchingRule.action?.type || 'rateLimit'; // Default to rateLimit if not specified
+        if (rateLimitInfo.allowed) {
+          // Rate limit not exceeded
+          console.log('Rate limit not exceeded, forwarding request');
+          response = await fetch(request);
+          statusCode = response.status;
+
+          if (actionType === 'simulate') {
+            response = new Response(response.body, response);
+            response.headers.set('X-Rate-Limit-Simulated', 'false');
+          }
+        } else {
+          // Rate limit exceeded
+          console.log('Rate limit exceeded, applying action:', actionType);
           switch (actionType) {
             case 'log':
               console.log('Logging rate limit exceed:', rateLimitInfo);
-              // Pass through the request
-              return fetch(request);
+              response = await fetch(request);
+              statusCode = response.status;
+              break;
             case 'simulate':
               console.log('Simulating rate limit exceed:', rateLimitInfo);
-              // Pass through the request, but add a header to indicate simulation
-              const simulatedResponse = await fetch(request);
-              const newSimulatedResponse = new Response(simulatedResponse.body, simulatedResponse);
-              newSimulatedResponse.headers.set('X-Rate-Limit-Simulated', 'true');
-              return newSimulatedResponse;
+              response = await fetch(request);
+              response = new Response(response.body, response);
+              response.headers.set('X-Rate-Limit-Simulated', 'true');
+              statusCode = response.status;
+              break;
             case 'block':
-              return new Response('Forbidden', { status: 403 });
-            case 'rateLimit':
-              return serveRateLimitPage(env, request, rateLimitInfo);
+              console.log('Blocking request due to rate limit');
+              response = new Response('Forbidden', { status: 403 });
+              statusCode = 403;
+              break;
             case 'customResponse':
-              return new Response(matchingRule.action.body, {
-                status: matchingRule.action.statusCode,
+              console.log('Applying custom response due to rate limit');
+              statusCode = parseInt(matchingRule.action.statusCode);
+              response = new Response(matchingRule.action.body, {
+                status: statusCode,
                 headers: { 'Content-Type': 'application/json' },
               });
+              break;
+            case 'rateLimit':
             default:
-              console.error('Unknown action type:', actionType);
-              return fetch(request);
+              console.log('Serving rate limit page');
+              response = serveRateLimitPage(env, request, rateLimitInfo);
+              statusCode = 429;
+              break;
           }
         }
 
-        // If rate limit not exceeded, forward the request
-        console.log('Rate limit not exceeded, forwarding request');
-        const response = await fetch(request);
+        console.log('Response status:', statusCode);
 
-        const newResponse = new Response(response.body, response);
+        // Apply rate limit headers
         [
           'X-Rate-Limit-Remaining',
           'X-Rate-Limit-Limit',
@@ -158,12 +202,12 @@ export default {
         ].forEach((header) => {
           const value = rateLimitResponse.headers.get(header);
           if (value) {
-            newResponse.headers.set(header, value);
+            response.headers.set(header, value);
             console.log('Set', header + ':', value);
           }
         });
 
-        return newResponse;
+        return response;
       } catch (error) {
         console.error('Rate limiting error:', error);
         return fetch(request); // Pass through on rate limiting error
@@ -171,7 +215,7 @@ export default {
     }
 
     // If request doesn't match any rule, pass through to origin
-    console.log('Request does not match any rate limit criteria, passing through to origin');
+    console.log('Request does not match any criteria, passing through to origin');
     return fetch(request);
   },
 };
