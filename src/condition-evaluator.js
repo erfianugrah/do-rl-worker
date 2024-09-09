@@ -1,3 +1,39 @@
+const BODY_SIZE_LIMIT = 524288; // 512 KB in bytes
+
+const fieldFunctions = {
+  method: (request) => request.method,
+  url: (request) => request.url,
+  body: async (request) => {
+    try {
+      const clonedRequest = request.clone();
+      const reader = clonedRequest.body.getReader();
+      let body = '';
+      let bytesRead = 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = new TextDecoder().decode(value);
+        bytesRead += value.length;
+
+        if (bytesRead <= BODY_SIZE_LIMIT) {
+          body += chunk;
+        } else {
+          body += chunk.slice(0, BODY_SIZE_LIMIT - (bytesRead - value.length));
+          console.warn(`Request body exceeded ${BODY_SIZE_LIMIT} bytes. Truncating.`);
+          break;
+        }
+      }
+
+      return body;
+    } catch (error) {
+      console.error('Error reading request body:', error);
+      return '';
+    }
+  },
+};
+
 export async function evaluateCondition(request, condition) {
   const { field, operator, value } = condition;
 
@@ -8,11 +44,12 @@ export async function evaluateCondition(request, condition) {
 
   // Convert to number for numeric fields
   const numericFields = [
-    'http.content_length',
     'cf.asn',
-    'cf.bot_management.score',
-    'cf.client_tcp_rtt',
-    'cf.threat_score',
+    'cf.botManagement.score',
+    'cf.clientTrustScore',
+    'cf.latitude',
+    'cf.longitude',
+    'cf.tlsClientHelloLength',
   ];
   if (numericFields.includes(field)) {
     fieldValue = parseFloat(fieldValue);
@@ -45,14 +82,6 @@ export async function evaluateCondition(request, condition) {
       return fieldValue === value;
     case 'ne':
       return fieldValue !== value;
-    case 'gt':
-      return fieldValue > value;
-    case 'ge':
-      return fieldValue >= value;
-    case 'lt':
-      return fieldValue < value;
-    case 'le':
-      return fieldValue <= value;
     case 'contains':
       return fieldValue.includes(value);
     case 'not_contains':
@@ -75,78 +104,33 @@ async function getFieldValue(request, field) {
 
   console.log(`Getting field value for: ${field}`);
 
-  switch (field) {
-    case 'http.host':
-      return url.hostname;
-    case 'http.method':
-      return request.method;
-    case 'http.path':
-      return url.pathname;
-    case 'http.url':
-      return request.url;
-    case 'http.user_agent':
-      return request.headers.get('User-Agent') || '';
-    case 'ip.src':
-      return request.headers.get('CF-Connecting-IP') || '';
-    case 'ssl':
-      return url.protocol === 'https:';
-    case 'http.referer':
-      return request.headers.get('Referer') || '';
-    case 'http.x_forwarded_for':
-      return request.headers.get('X-Forwarded-For') || '';
-    case 'http.cookie':
-      return request.headers.get('Cookie') || '';
-    case 'http.origin':
-      return request.headers.get('Origin') || '';
-    case 'http.content_type':
-      return request.headers.get('Content-Type') || '';
-    case 'http.content_length':
-      return request.headers.get('Content-Length') || '';
-    case 'http.accept':
-      return request.headers.get('Accept') || '';
-    case 'http.accept_encoding':
-      return request.headers.get('Accept-Encoding') || '';
-    case 'http.accept_language':
-      return request.headers.get('Accept-Language') || '';
-    case 'http.authorization':
-      return request.headers.get('Authorization') || '';
-    case 'http.cache_control':
-      return request.headers.get('Cache-Control') || '';
-    case 'http.if_modified_since':
-      return request.headers.get('If-Modified-Since') || '';
-    case 'http.if_none_match':
-      return request.headers.get('If-None-Match') || '';
-    case 'http.pragma':
-      return request.headers.get('Pragma') || '';
-    case 'http.query':
-      return url.search.slice(1); // Remove the leading '?'
-    case 'http.body':
-      try {
-        const clone = request.clone();
-        const body = await clone.text();
-        return body;
-      } catch (error) {
-        console.error('Error reading request body:', error);
-        return '';
-      }
-    case 'cf.asn':
-      return cf.asn?.toString() || '';
-    case 'cf.country':
-      return cf.country || '';
-    case 'cf.colo':
-      return cf.colo || '';
-    case 'cf.bot_management.score':
-      return cf.botManagement?.score?.toString() || '';
-    case 'cf.client_tcp_rtt':
-      return cf.clientTcpRtt?.toString() || '';
-    case 'cf.threat_score':
-      return cf.threatScore?.toString() || '';
-    default:
-      if (field.startsWith('http.header.')) {
-        const headerName = field.substring('http.header.'.length);
-        return request.headers.get(headerName) || '';
-      }
-      console.warn(`Unknown field: ${field}`);
-      return '';
+  if (field.startsWith('headers.')) {
+    const headerName = field.substring('headers.'.length);
+    return request.headers.get(headerName) || '';
   }
+
+  if (field.startsWith('url.')) {
+    const urlProp = field.substring('url.'.length);
+    return url[urlProp] || '';
+  }
+
+  if (field.startsWith('cf.')) {
+    return getCfValue(cf, field.substring('cf.'.length)) || '';
+  }
+
+  if (field in fieldFunctions) {
+    return await fieldFunctions[field](request);
+  }
+
+  console.warn(`Unknown field: ${field}`);
+  return '';
+}
+
+function getCfValue(cf, path) {
+  return path.split('.').reduce((obj, key) => {
+    if (obj && typeof obj === 'object' && key in obj) {
+      return obj[key];
+    }
+    return undefined;
+  }, cf);
 }
