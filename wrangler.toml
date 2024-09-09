@@ -13,12 +13,13 @@ RATE_LIMIT_INFO_PATH = "/_ratelimit"
 
 [durable_objects]
 bindings = [
-  { name = "RATE_LIMITER", class_name = "RateLimiter" }
+  { name = "RATE_LIMITER", class_name = "RateLimiter" },
+  { name = "CONFIG_STORAGE", class_name = "ConfigStorage" }
 ]
 
 [[migrations]]
 tag = "v1"
-new_classes = ["RateLimiter"]
+new_classes = ["RateLimiter", "ConfigStorage"]
 
 [[services]]
 binding = "UI_WORKER"

@@ -1,4 +1,5 @@
 import { RateLimiter } from './rate-limiter.js';
+import { ConfigStorage } from './config-storage.js';
 import { serveRateLimitPage, serveRateLimitInfoPage } from './staticpages.js';
 import { evaluateCondition } from './condition-evaluator.js';
 
@@ -70,16 +71,23 @@ export default {
   async fetch(request, env, ctx) {
     console.log('Received request for URL:', request.url);
 
+    const url = new URL(request.url);
+
+    // Handle configuration requests
+    if (url.pathname === '/config') {
+      const configStorageId = env.CONFIG_STORAGE.idFromName('global');
+      const configStorage = env.CONFIG_STORAGE.get(configStorageId);
+      return configStorage.fetch(request);
+    }
+
     let config;
     try {
-      // Fetch config from UI worker using Service Binding
-      console.log('Fetching config from UI worker');
-      const configResponse = await env.UI_WORKER.fetch('https://ui-worker.example.com/config');
-      if (!configResponse.ok) {
-        throw new Error(
-          `Failed to fetch config from UI worker: ${configResponse.status} ${configResponse.statusText}`
-        );
-      }
+      // Fetch config from ConfigStorage Durable Object
+      const configStorageId = env.CONFIG_STORAGE.idFromName('global');
+      const configStorage = env.CONFIG_STORAGE.get(configStorageId);
+      const configResponse = await configStorage.fetch(
+        new Request('https://dummy-url/config', { method: 'GET' })
+      );
       const rawConfig = await configResponse.json();
       console.log('Received raw config:', JSON.stringify(rawConfig, null, 2));
 
@@ -95,8 +103,6 @@ export default {
       console.error('Configuration error:', error);
       return fetch(request); // Pass through on config error
     }
-
-    const url = new URL(request.url);
 
     // Find the first matching rule
     const matchingRule = await findMatchingRule(request, config.rules);
@@ -194,6 +200,7 @@ export default {
         console.log('Response status:', statusCode);
 
         // Apply rate limit headers
+        const newHeaders = new Headers(response.headers);
         [
           'X-Rate-Limit-Remaining',
           'X-Rate-Limit-Limit',
@@ -202,9 +209,16 @@ export default {
         ].forEach((header) => {
           const value = rateLimitResponse.headers.get(header);
           if (value) {
-            response.headers.set(header, value);
+            newHeaders.set(header, value);
             console.log('Set', header + ':', value);
           }
+        });
+
+        // Create a new response with the updated headers
+        response = new Response(response.body, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: newHeaders,
         });
 
         return response;
@@ -220,4 +234,4 @@ export default {
   },
 };
 
-export { RateLimiter };
+export { RateLimiter, ConfigStorage };
