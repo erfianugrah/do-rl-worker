@@ -142,7 +142,7 @@ export default {
         const clientIP =
           request.headers.get('CF-Connecting-IP') ||
           request.headers.get('X-Forwarded-For') ||
-          request.headers.get('X-Real-IP') ||
+          request.headers.get('True-Client-IP') ||
           'unknown';
         console.log('Client IP:', clientIP);
 
