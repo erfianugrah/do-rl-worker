@@ -12,6 +12,7 @@ export function serveRateLimitPage(env, request, rateLimitInfo) {
         retryAfter: rateLimitInfo.retryAfter,
         limit: rateLimitInfo.limit,
         period: rateLimitInfo.period,
+        reset: rateLimitInfo.reset,
       }),
       {
         status: statusCode,
@@ -47,10 +48,14 @@ export function serveRateLimitPage(env, request, rateLimitInfo) {
                 border-radius: 10px;
                 box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
                 background-color: #ffffff;
+                max-width: 600px;
+                width: 90%;
             }
             h1 { color: #e74c3c; }
-            #countdown { font-weight: bold; }
+            #countdown { font-weight: bold; color: #e74c3c; }
             .status-code { color: #7f8c8d; margin-top: 20px; }
+            .info-item { margin: 10px 0; }
+            .reset-time { font-weight: bold; color: #3498db; }
         </style>
     </head>
     <body>
@@ -58,6 +63,9 @@ export function serveRateLimitPage(env, request, rateLimitInfo) {
             <h1>Rate Limit Exceeded</h1>
             <p>You have exceeded the rate limit of ${rateLimitInfo.limit} requests per ${rateLimitInfo.period} seconds.</p>
             <p>Please try again in <span id="countdown">${rateLimitInfo.retryAfter}</span> seconds.</p>
+            <div class="info-item">Limit: ${rateLimitInfo.limit} requests</div>
+            <div class="info-item">Period: ${rateLimitInfo.period} seconds</div>
+            <div class="info-item">Reset time: <span class="reset-time">${new Date(rateLimitInfo.reset * 1000).toLocaleString()}</span></div>
             <p class="status-code">Status Code: ${statusCode}</p>
         </div>
         <script>

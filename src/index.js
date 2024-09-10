@@ -80,6 +80,12 @@ export default {
       return configStorage.fetch(request);
     }
 
+    // Check if this is a request for the rate limit page itself
+    if (request.headers.get('X-Serve-Rate-Limit-Page') === 'true') {
+      const rateLimitInfo = JSON.parse(request.headers.get('X-Rate-Limit-Info') || '{}');
+      return serveRateLimitPage(env, request, rateLimitInfo);
+    }
+
     let config;
     try {
       // Fetch config from ConfigStorage Durable Object
@@ -133,11 +139,19 @@ export default {
 
       console.log('Checking rate limit');
       try {
+        const clientIP =
+          request.headers.get('CF-Connecting-IP') ||
+          request.headers.get('X-Forwarded-For') ||
+          request.headers.get('X-Real-IP') ||
+          'unknown';
+        console.log('Client IP:', clientIP);
+
         const rateLimiterRequest = new Request(request.url, {
           method: request.method,
           headers: {
             ...request.headers,
             'X-Rate-Limit-Config': JSON.stringify(matchingRule),
+            'CF-Connecting-IP': clientIP,
           },
           body: request.body,
         });
@@ -191,7 +205,26 @@ export default {
             case 'rateLimit':
             default:
               console.log('Serving rate limit page');
-              response = serveRateLimitPage(env, request, rateLimitInfo);
+              const acceptHeader = request.headers.get('Accept') || '';
+              if (acceptHeader.includes('text/html')) {
+                // Serve HTML rate limit page for web users
+                response = serveRateLimitPage(env, request, rateLimitInfo);
+              } else {
+                // Serve JSON response for non-web requests
+                response = new Response(
+                  JSON.stringify({
+                    error: 'Rate limit exceeded',
+                    retryAfter: rateLimitInfo.retryAfter,
+                  }),
+                  {
+                    status: 429,
+                    headers: {
+                      'Content-Type': 'application/json',
+                      'Retry-After': rateLimitInfo.retryAfter.toString(),
+                    },
+                  }
+                );
+              }
               statusCode = 429;
               break;
           }

@@ -39,15 +39,26 @@ export class RateLimiter {
       const now = Math.floor(Date.now() / 1000);
 
       let bucket;
+      let clientIdentifier;
+
+      // Log all headers for debugging
+      console.log('RateLimiter: All request headers:', Object.fromEntries([...request.headers]));
+
       if (rule.fingerprint && rule.fingerprint.parameters) {
         console.log('RateLimiter: Generating fingerprint');
         const fingerprint = await generateFingerprint(request, this.env, rule.fingerprint);
         console.log('RateLimiter: Generated fingerprint:', fingerprint);
+        clientIdentifier = fingerprint;
         const fingerprintKey = `rate_limit:${rule.name}:fingerprint:${fingerprint}`;
         bucket = await this.getBucket(fingerprintKey, rule.rateLimit.limit, now);
       } else {
-        const ip = request.headers.get('CF-Connecting-IP');
+        const ip =
+          request.headers.get('CF-Connecting-IP') ||
+          request.headers.get('X-Forwarded-For') ||
+          request.headers.get('X-Real-IP') ||
+          'unknown';
         console.log('RateLimiter: Client IP:', ip);
+        clientIdentifier = ip;
         const ipKey = `rate_limit:${rule.name}:ip:${ip}`;
         bucket = await this.getBucket(ipKey, rule.rateLimit.limit, now);
       }
@@ -75,6 +86,7 @@ export class RateLimiter {
             period: rule.rateLimit.period,
             reset: resetTime,
             action: rule.action,
+            clientIdentifier: clientIdentifier,
           }),
           {
             status: 200,
@@ -84,6 +96,7 @@ export class RateLimiter {
               'X-Rate-Limit-Limit': rule.rateLimit.limit.toString(),
               'X-Rate-Limit-Period': rule.rateLimit.period.toString(),
               'X-Rate-Limit-Reset': resetTime.toString(),
+              'X-Client-Identifier': clientIdentifier,
             },
           }
         );
@@ -102,6 +115,7 @@ export class RateLimiter {
             period: rule.rateLimit.period,
             reset: Math.ceil(now + parseFloat(retryAfter)),
             action: rule.action,
+            clientIdentifier: clientIdentifier,
           }),
           {
             status: 429,
@@ -111,13 +125,14 @@ export class RateLimiter {
               'X-Rate-Limit-Limit': rule.rateLimit.limit.toString(),
               'X-Rate-Limit-Period': rule.rateLimit.period.toString(),
               'X-Rate-Limit-Reset': Math.ceil(now + parseFloat(retryAfter)).toString(),
+              'X-Client-Identifier': clientIdentifier,
             },
           }
         );
       }
     } catch (error) {
       console.error('RateLimiter: Unexpected error:', error);
-      return new Response(JSON.stringify({ error: 'Unexpected error' }), {
+      return new Response(JSON.stringify({ error: 'Unexpected error', details: error.message }), {
         status: 500,
         headers: { 'Content-Type': 'application/json' },
       });
