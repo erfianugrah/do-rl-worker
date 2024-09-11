@@ -151,14 +151,17 @@ export default {
         matchingRule.rateLimit.limit = Number(matchingRule.rateLimit.limit);
         matchingRule.rateLimit.period = Number(matchingRule.rateLimit.period);
 
+        // Stringify the cf object
+        const cfData = JSON.stringify(request.cf || {});
+
         const rateLimiterRequest = new Request(request.url, {
           method: request.method,
           headers: {
             ...request.headers,
             'X-Rate-Limit-Config': JSON.stringify(matchingRule),
             'CF-Connecting-IP': clientIP,
+            'X-Original-CF-Data': cfData,
           },
-          cf: request.cf,
           body: request.body,
         });
         const rateLimitResponse = await rateLimiter.fetch(rateLimiterRequest);

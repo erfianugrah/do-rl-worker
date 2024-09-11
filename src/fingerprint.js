@@ -52,11 +52,10 @@ function getClientIP(request) {
   );
 }
 
-export async function generateFingerprint(request, env, fingerprintConfig) {
+export async function generateFingerprint(request, env, fingerprintConfig, originalCfData) {
   console.log('Generating fingerprint with config:', JSON.stringify(fingerprintConfig, null, 2));
 
-  const cf = request.cf || {};
-  console.log('Fingerprint: CF object:', JSON.stringify(cf, null, 2));
+  console.log('Fingerprint: Original CF object:', JSON.stringify(originalCfData, null, 2));
 
   const clientIP = getClientIP(request);
   const timestamp = Math.floor(Date.now() / 1000);
@@ -68,7 +67,7 @@ export async function generateFingerprint(request, env, fingerprintConfig) {
       let value;
 
       if (param.startsWith('cf.')) {
-        value = getNestedValue(cf, param.slice(3));
+        value = getNestedValue(originalCfData, param.slice(3));
         if (value === undefined) {
           console.warn(`CF property not available for parameter: ${param}`);
         }

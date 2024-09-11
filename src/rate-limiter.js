@@ -19,6 +19,10 @@ export class RateLimiter {
       rule = JSON.parse(request.headers.get('X-Rate-Limit-Config'));
       console.log('RateLimiter: Parsed rule:', JSON.stringify(rule, null, 2));
 
+      // Parse the original CF data
+      const originalCfData = JSON.parse(request.headers.get('X-Original-CF-Data') || '{}');
+      console.log('RateLimiter: Original CF data:', JSON.stringify(originalCfData, null, 2));
+
       // Ensure limit and period are numbers
       rule.rateLimit.limit = Number(rule.rateLimit.limit);
       rule.rateLimit.period = Number(rule.rateLimit.period);
@@ -30,7 +34,12 @@ export class RateLimiter {
           'RateLimiter: Generating fingerprint with parameters:',
           rule.fingerprint.parameters
         );
-        clientIdentifier = await generateFingerprint(request, this.env, rule.fingerprint);
+        clientIdentifier = await generateFingerprint(
+          request,
+          this.env,
+          rule.fingerprint,
+          originalCfData
+        );
       } else {
         clientIdentifier = this.getClientIP(request);
       }
@@ -64,6 +73,7 @@ export class RateLimiter {
         period: rule.rateLimit.period,
         reset: resetTime,
         clientIdentifier: clientIdentifier,
+        botScore: originalCfData.botManagement?.score,
       });
 
       console.log('RateLimiter: Response body:', responseBody);
