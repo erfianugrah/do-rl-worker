@@ -116,7 +116,7 @@ export default {
     if (matchingRule) {
       console.log('Request matches criteria for rule:', matchingRule.name);
 
-      const actionType = matchingRule.action?.type || 'rateLimit'; // Default to rateLimit if not specified
+      const actionType = matchingRule.action?.type || 'rateLimit';
       console.log('Action type:', actionType);
 
       const rateLimiterId = env.RATE_LIMITER.idFromName('global');
@@ -131,6 +131,7 @@ export default {
             ...request.headers,
             'X-Rate-Limit-Config': JSON.stringify(matchingRule),
           },
+          cf: request.cf,
         });
         const rateLimitInfoResponse = await rateLimiter.fetch(rateLimiterRequest);
         const rateLimitInfo = await rateLimitInfoResponse.json();
@@ -146,6 +147,10 @@ export default {
           'unknown';
         console.log('Client IP:', clientIP);
 
+        // Ensure limit and period are numbers
+        matchingRule.rateLimit.limit = Number(matchingRule.rateLimit.limit);
+        matchingRule.rateLimit.period = Number(matchingRule.rateLimit.period);
+
         const rateLimiterRequest = new Request(request.url, {
           method: request.method,
           headers: {
@@ -153,10 +158,29 @@ export default {
             'X-Rate-Limit-Config': JSON.stringify(matchingRule),
             'CF-Connecting-IP': clientIP,
           },
+          cf: request.cf,
           body: request.body,
         });
         const rateLimitResponse = await rateLimiter.fetch(rateLimiterRequest);
-        const rateLimitInfo = await rateLimitResponse.json();
+
+        // Log the response status and headers for debugging
+        console.log('Rate limit response status:', rateLimitResponse.status);
+        console.log(
+          'Rate limit response headers:',
+          JSON.stringify(Object.fromEntries(rateLimitResponse.headers))
+        );
+
+        const rateLimitResponseText = await rateLimitResponse.text();
+        console.log('Rate limit response text:', rateLimitResponseText);
+
+        let rateLimitInfo;
+        try {
+          rateLimitInfo = JSON.parse(rateLimitResponseText);
+        } catch (parseError) {
+          console.error('Error parsing rate limit response:', parseError);
+          console.error('Raw response:', rateLimitResponseText);
+          throw new Error('Invalid rate limit response');
+        }
 
         console.log('Rate limit response:', rateLimitInfo);
 
@@ -257,7 +281,7 @@ export default {
         return response;
       } catch (error) {
         console.error('Rate limiting error:', error);
-        return fetch(request); // Pass through on rate limiting error
+        return new Response('Internal Server Error', { status: 500 });
       }
     }
 
