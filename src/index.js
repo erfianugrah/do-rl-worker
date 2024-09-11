@@ -73,8 +73,8 @@ async function handleRateLimit(request, env, matchingRule) {
   headers.set('Content-Type', 'application/json');
 
   const payload = {
-    originalUrl: request.url,
-    method: request.method,
+    // originalUrl: request.url,
+    // method: request.method,
     cf: request.cf || {},
   };
 

@@ -13,6 +13,7 @@ export function serveRateLimitPage(env, request, rateLimitInfo) {
         limit: rateLimitInfo.limit,
         period: rateLimitInfo.period,
         reset: rateLimitInfo.reset,
+        resetFormatted: rateLimitInfo.resetFormatted,
       }),
       {
         status: statusCode,
@@ -65,7 +66,7 @@ export function serveRateLimitPage(env, request, rateLimitInfo) {
             <p>Please try again in <span id="countdown">${rateLimitInfo.retryAfter}</span> seconds.</p>
             <div class="info-item">Limit: ${rateLimitInfo.limit} requests</div>
             <div class="info-item">Period: ${rateLimitInfo.period} seconds</div>
-            <div class="info-item">Reset time: <span class="reset-time">${new Date(rateLimitInfo.reset * 1000).toLocaleString()}</span></div>
+            <div class="info-item">Reset time: <span class="reset-time">${rateLimitInfo.resetFormatted}</span></div>
             <p class="status-code">Status Code: ${statusCode}</p>
         </div>
         <script>
@@ -77,10 +78,10 @@ export function serveRateLimitPage(env, request, rateLimitInfo) {
                     countdownElement.textContent = "0";
                     location.reload();
                 } else {
-                    countdownElement.textContent = timeLeft;
+                    countdownElement.textContent = timeLeft.toFixed(1);
                 }
-                timeLeft -= 1;
-            }, 1000);
+                timeLeft -= 0.1;
+            }, 100);
         </script>
     </body>
     </html>

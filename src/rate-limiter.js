@@ -1,5 +1,33 @@
 import { generateFingerprint } from './fingerprint.js';
 
+class SlidingWindowRateLimiter {
+  constructor(limit, windowSize) {
+    this.limit = limit;
+    this.windowSize = windowSize; // in milliseconds
+    this.requests = [];
+  }
+
+  allowRequest(now) {
+    this.requests = this.requests.filter((req) => now - req < this.windowSize);
+    if (this.requests.length < this.limit) {
+      this.requests.push(now);
+      return true;
+    }
+    return false;
+  }
+
+  getRemainingTokens(now) {
+    this.requests = this.requests.filter((req) => now - req < this.windowSize);
+    return Math.max(0, this.limit - this.requests.length);
+  }
+
+  getResetTime(now) {
+    if (this.requests.length === 0) return now + this.windowSize;
+    const oldestRequest = Math.min(...this.requests);
+    return oldestRequest + this.windowSize;
+  }
+}
+
 export class RateLimiter {
   constructor(state, env) {
     this.state = state;
@@ -19,35 +47,40 @@ export class RateLimiter {
 
     try {
       const payload = await request.json();
-      const { cf, originalUrl, method } = payload;
+      const { cf } = payload;
 
-      const now = Math.floor(Date.now() / 1000);
-      const { bucket, clientIdentifier } = await this.getBucketAndIdentifier(
+      const now = Date.now();
+      console.log(`Current time (now): ${now}`);
+
+      const { limiter, clientIdentifier } = await this.getLimiterAndIdentifier(
         request,
         rule,
         now,
         cf
       );
 
-      const isAllowed = bucket.tokens >= 1;
+      const isAllowed = limiter.allowRequest(now);
       console.log(
         `RateLimiter: Request ${isAllowed ? 'allowed' : 'denied'} for ${clientIdentifier}`
       );
 
-      if (isAllowed) {
-        bucket.tokens -= 1;
-        await this.state.storage.put(bucket.key, bucket);
-      }
+      const remainingTokens = limiter.getRemainingTokens(now);
+      const resetTime = limiter.getResetTime(now);
+      console.log(`Reset time (milliseconds): ${resetTime}`);
 
-      const resetTime = Math.ceil(
-        now + (1 - bucket.tokens) / (rule.rateLimit.limit / rule.rateLimit.period)
+      const retryAfter = Math.max(0, (resetTime - now) / 1000).toFixed(3);
+
+      // Store the updated limiter state
+      await this.state.storage.put(clientIdentifier, JSON.stringify(limiter));
+
+      return this.createResponse(
+        isAllowed,
+        rule,
+        remainingTokens,
+        resetTime,
+        retryAfter,
+        clientIdentifier
       );
-      const retryAfter = (
-        (1 - bucket.tokens) /
-        (rule.rateLimit.limit / rule.rateLimit.period)
-      ).toFixed(3);
-
-      return this.createResponse(isAllowed, bucket, rule, resetTime, retryAfter, clientIdentifier);
     } catch (error) {
       console.error('RateLimiter: Unexpected error:', error);
       return this.errorResponse('Unexpected error', 500);
@@ -65,64 +98,65 @@ export class RateLimiter {
     }
   }
 
-  async getBucketAndIdentifier(request, rule, now, cfData) {
-    let clientIdentifier, bucketKey;
+  async getLimiterAndIdentifier(request, rule, now, cfData) {
+    let clientIdentifier;
 
     if (rule.fingerprint?.parameters) {
       clientIdentifier = await generateFingerprint(request, this.env, rule.fingerprint, cfData);
-      bucketKey = `rate_limit:${rule.name}:fingerprint:${clientIdentifier}`;
+      clientIdentifier = `rate_limit:${rule.name}:fingerprint:${clientIdentifier}`;
     } else {
       clientIdentifier = cfData.clientIp || request.headers.get('CF-Connecting-IP') || 'unknown';
-      bucketKey = `rate_limit:${rule.name}:ip:${clientIdentifier}`;
+      clientIdentifier = `rate_limit:${rule.name}:ip:${clientIdentifier}`;
     }
 
-    let bucket = await this.state.storage.get(bucketKey);
-    if (!bucket) {
-      bucket = { key: bucketKey, tokens: rule.rateLimit.limit, lastRefill: now };
+    let limiterData = await this.state.storage.get(clientIdentifier);
+    let limiter;
+
+    if (limiterData) {
+      limiter = Object.assign(
+        new SlidingWindowRateLimiter(rule.rateLimit.limit, rule.rateLimit.period * 1000),
+        JSON.parse(limiterData)
+      );
+      limiter.requests = limiter.requests.filter((req) => now - req < limiter.windowSize);
+    } else {
+      limiter = new SlidingWindowRateLimiter(rule.rateLimit.limit, rule.rateLimit.period * 1000);
     }
 
-    bucket = this.refillBucket(bucket, rule.rateLimit.limit, rule.rateLimit.period, now);
-    return { bucket, clientIdentifier };
+    return { limiter, clientIdentifier };
   }
 
-  refillBucket(bucket, limit, period, now) {
-    if (period <= 0) {
-      console.error('RateLimiter: Invalid period', period);
-      return bucket;
-    }
-    const elapsed = Math.max(0, now - bucket.lastRefill);
-    const rate = limit / period;
-    bucket.tokens = Math.min(limit, bucket.tokens + elapsed * rate);
-    bucket.lastRefill = now;
-    return bucket;
-  }
+  createResponse(isAllowed, rule, remainingTokens, resetTime, retryAfter, clientIdentifier) {
+    const resetTimeSeconds = Math.floor(resetTime / 1000);
+    console.log(`Reset time (seconds): ${resetTimeSeconds}`);
 
-  createResponse(isAllowed, bucket, rule, resetTime, retryAfter, clientIdentifier) {
     const headers = {
       'Content-Type': 'application/json',
       'X-Rate-Limit-Limit': rule.rateLimit.limit.toString(),
+      'X-Rate-Limit-Remaining': remainingTokens.toFixed(3),
+      'X-Rate-Limit-Reset': resetTimeSeconds.toString(),
+      'X-Rate-Limit-Reset-Precise': (resetTime / 1000).toFixed(3),
       'X-Rate-Limit-Period': rule.rateLimit.period.toString(),
-      'X-Rate-Limit-Reset': resetTime.toString(),
       'X-Client-Identifier': clientIdentifier,
     };
 
     const responseBody = {
       allowed: isAllowed,
       limit: rule.rateLimit.limit,
+      remaining: parseFloat(remainingTokens.toFixed(3)),
+      reset: resetTimeSeconds,
+      resetFormatted: new Date(resetTime).toUTCString(),
       period: rule.rateLimit.period,
-      reset: resetTime,
       action: rule.action,
       clientIdentifier: clientIdentifier,
     };
 
-    if (isAllowed) {
-      const remainingTokens = Math.max(0, bucket.tokens - 1); // Subtract 1 to account for current request
-      headers['X-Rate-Limit-Remaining'] = remainingTokens.toFixed(6);
-      responseBody.remaining = Number(remainingTokens.toFixed(6)); // Round to 6 decimal places
-    } else {
+    if (!isAllowed) {
       headers['Retry-After'] = retryAfter;
       responseBody.retryAfter = parseFloat(retryAfter);
     }
+
+    console.log('Response headers:', headers);
+    console.log('Response body:', responseBody);
 
     return new Response(JSON.stringify(responseBody), {
       status: isAllowed ? 200 : 429,
@@ -141,26 +175,32 @@ export class RateLimiter {
     try {
       const payload = await request.json();
       const { cf } = payload;
-      const now = Math.floor(Date.now() / 1000);
-      const { bucket } = await this.getBucketAndIdentifier(request, rule, now, cf);
-
-      const resetTime = Math.ceil(
-        now +
-          (rule.rateLimit.limit - bucket.tokens) / (rule.rateLimit.limit / rule.rateLimit.period)
+      const now = Date.now();
+      const { limiter, clientIdentifier } = await this.getLimiterAndIdentifier(
+        request,
+        rule,
+        now,
+        cf
       );
 
-      return new Response(
-        JSON.stringify({
-          limit: rule.rateLimit.limit,
-          remaining: bucket.tokens,
-          reset: resetTime,
-          period: rule.rateLimit.period,
-        }),
-        {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        }
-      );
+      const remainingTokens = limiter.getRemainingTokens(now);
+      const resetTime = limiter.getResetTime(now);
+      const resetTimeSeconds = Math.floor(resetTime / 1000);
+
+      const responseBody = {
+        limit: rule.rateLimit.limit,
+        remaining: parseFloat(remainingTokens.toFixed(3)),
+        reset: resetTimeSeconds,
+        resetFormatted: new Date(resetTime).toUTCString(),
+        period: rule.rateLimit.period,
+      };
+
+      console.log('Rate limit info:', responseBody);
+
+      return new Response(JSON.stringify(responseBody), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
     } catch (error) {
       console.error('RateLimiter: Unexpected error in getRateLimitInfo:', error);
       return this.errorResponse('Unexpected error', 500);
