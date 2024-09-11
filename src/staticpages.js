@@ -19,7 +19,7 @@ export function serveRateLimitPage(env, request, rateLimitInfo) {
         headers: {
           'Content-Type': 'application/json',
           'Cache-Control': 'no-store, max-age=0',
-          'Retry-After': rateLimitInfo.retryAfter,
+          'Retry-After': rateLimitInfo.retryAfter.toString(),
         },
       }
     );
@@ -91,7 +91,7 @@ export function serveRateLimitPage(env, request, rateLimitInfo) {
     headers: {
       'Content-Type': 'text/html',
       'Cache-Control': 'no-store, max-age=0',
-      'Retry-After': rateLimitInfo.retryAfter,
+      'Retry-After': rateLimitInfo.retryAfter.toString(),
     },
   });
 }

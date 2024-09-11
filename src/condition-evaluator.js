@@ -53,30 +53,38 @@ export async function evaluateCondition(request, condition) {
   ];
   if (numericFields.includes(field)) {
     fieldValue = parseFloat(fieldValue);
-    const numericValue = parseFloat(value);
-    console.log(`Numeric comparison: ${fieldValue} ${operator} ${numericValue}`);
-
-    switch (operator) {
-      case 'eq':
-        return fieldValue === numericValue;
-      case 'ne':
-        return fieldValue !== numericValue;
-      case 'gt':
-        return fieldValue > numericValue;
-      case 'ge':
-        return fieldValue >= numericValue;
-      case 'lt':
-        return fieldValue < numericValue;
-      case 'le':
-        return fieldValue <= numericValue;
-      default:
-        console.warn(`Numeric operator not applicable: ${operator}`);
-        return false;
-    }
+    return evaluateNumericCondition(fieldValue, operator, value);
   }
 
   // String comparisons
   console.log(`String comparison: "${fieldValue}" ${operator} "${value}"`);
+  return evaluateStringCondition(fieldValue, operator, value);
+}
+
+function evaluateNumericCondition(fieldValue, operator, value) {
+  const numericValue = parseFloat(value);
+  console.log(`Numeric comparison: ${fieldValue} ${operator} ${numericValue}`);
+
+  switch (operator) {
+    case 'eq':
+      return fieldValue === numericValue;
+    case 'ne':
+      return fieldValue !== numericValue;
+    case 'gt':
+      return fieldValue > numericValue;
+    case 'ge':
+      return fieldValue >= numericValue;
+    case 'lt':
+      return fieldValue < numericValue;
+    case 'le':
+      return fieldValue <= numericValue;
+    default:
+      console.warn(`Numeric operator not applicable: ${operator}`);
+      return false;
+  }
+}
+
+function evaluateStringCondition(fieldValue, operator, value) {
   switch (operator) {
     case 'eq':
       return fieldValue === value;

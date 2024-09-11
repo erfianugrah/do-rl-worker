@@ -1,10 +1,43 @@
 import { generateFingerprint } from './fingerprint.js';
 import { evaluateCondition } from './condition-evaluator.js';
 
+class BucketOperations {
+  constructor(storage) {
+    this.storage = storage;
+  }
+
+  async getBucket(key, limit, now) {
+    let bucket = await this.storage.get(key);
+    if (!bucket) {
+      console.log(`BucketOperations: Creating new bucket for key ${key}`);
+      bucket = { key, tokens: limit, lastRefill: now };
+    } else {
+      console.log(
+        `BucketOperations: Retrieved existing bucket for key ${key}:`,
+        JSON.stringify(bucket, null, 2)
+      );
+    }
+    return bucket;
+  }
+
+  refillBucket(bucket, limit, period, now) {
+    const elapsed = Math.max(0, now - bucket.lastRefill);
+    const rate = limit / period;
+    const oldTokens = bucket.tokens;
+    bucket.tokens = Math.min(limit, bucket.tokens + elapsed * rate);
+    bucket.lastRefill = now;
+    console.log(
+      `BucketOperations: Refilled bucket, old token count: ${oldTokens}, new token count: ${bucket.tokens}`
+    );
+    return bucket;
+  }
+}
+
 export class RateLimiter {
   constructor(state, env) {
     this.state = state;
     this.env = env;
+    this.bucketOps = new BucketOperations(state.storage);
   }
 
   async fetch(request) {
@@ -19,11 +52,9 @@ export class RateLimiter {
       rule = JSON.parse(request.headers.get('X-Rate-Limit-Config'));
       console.log('RateLimiter: Parsed rule:', JSON.stringify(rule, null, 2));
 
-      // Parse the original CF data
       const originalCfData = JSON.parse(request.headers.get('X-Original-CF-Data') || '{}');
       console.log('RateLimiter: Original CF data:', JSON.stringify(originalCfData, null, 2));
 
-      // Ensure limit and period are numbers
       rule.rateLimit.limit = Number(rule.rateLimit.limit);
       rule.rateLimit.period = Number(rule.rateLimit.period);
 
@@ -46,8 +77,13 @@ export class RateLimiter {
       console.log('RateLimiter: Client identifier:', clientIdentifier);
 
       const bucketKey = `rate_limit:${rule.name}:${clientIdentifier}`;
-      bucket = await this.getBucket(bucketKey, rule.rateLimit.limit, now);
-      bucket = this.refillBucket(bucket, rule.rateLimit.limit, rule.rateLimit.period, now);
+      bucket = await this.bucketOps.getBucket(bucketKey, rule.rateLimit.limit, now);
+      bucket = this.bucketOps.refillBucket(
+        bucket,
+        rule.rateLimit.limit,
+        rule.rateLimit.period,
+        now
+      );
 
       console.log('RateLimiter: Bucket after refill:', JSON.stringify(bucket, null, 2));
 
@@ -66,12 +102,15 @@ export class RateLimiter {
           (rule.rateLimit.limit - bucket.tokens) / (rule.rateLimit.limit / rule.rateLimit.period)
       );
 
+      const retryAfter = Math.max(0, resetTime - now);
+
       const responseBody = JSON.stringify({
         allowed: isAllowed,
         remaining: bucket.tokens,
         limit: rule.rateLimit.limit,
         period: rule.rateLimit.period,
         reset: resetTime,
+        retryAfter: retryAfter,
         clientIdentifier: clientIdentifier,
         botScore: originalCfData.botManagement?.score,
       });
@@ -86,6 +125,7 @@ export class RateLimiter {
           'X-Rate-Limit-Limit': rule.rateLimit.limit.toString(),
           'X-Rate-Limit-Period': rule.rateLimit.period.toString(),
           'X-Rate-Limit-Reset': resetTime.toString(),
+          'X-Rate-Limit-Retry-After': retryAfter.toString(),
           'X-Client-Identifier': clientIdentifier,
         },
       });
@@ -104,7 +144,6 @@ export class RateLimiter {
       );
     }
   }
-
   getClientIP(request) {
     return (
       request.headers.get('CF-Connecting-IP') ||
@@ -112,31 +151,5 @@ export class RateLimiter {
       request.headers.get('X-Forwarded-For')?.split(',')[0].trim() ||
       'unknown'
     );
-  }
-
-  async getBucket(key, limit, now) {
-    let bucket = await this.state.storage.get(key);
-    if (!bucket) {
-      console.log(`RateLimiter: Creating new bucket for key ${key}`);
-      bucket = { key, tokens: limit, lastRefill: now };
-    } else {
-      console.log(
-        `RateLimiter: Retrieved existing bucket for key ${key}:`,
-        JSON.stringify(bucket, null, 2)
-      );
-    }
-    return bucket;
-  }
-
-  refillBucket(bucket, limit, period, now) {
-    const elapsed = Math.max(0, now - bucket.lastRefill);
-    const rate = limit / period;
-    const oldTokens = bucket.tokens;
-    bucket.tokens = Math.min(limit, bucket.tokens + elapsed * rate);
-    bucket.lastRefill = now;
-    console.log(
-      `RateLimiter: Refilled bucket, old token count: ${oldTokens}, new token count: ${bucket.tokens}`
-    );
-    return bucket;
   }
 }
