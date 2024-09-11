@@ -35,54 +35,45 @@ async function getRequestBody(request) {
 }
 
 function getNestedValue(obj, path) {
-  return path.split('.').reduce((current, key) => {
-    if (current && typeof current === 'object' && key in current) {
-      return current[key];
-    }
-    return undefined;
-  }, obj);
+  return path
+    .split('.')
+    .reduce(
+      (current, key) =>
+        current && typeof current === 'object' && key in current ? current[key] : undefined,
+      obj
+    );
 }
 
-function getClientIP(request) {
-  return (
-    request.headers.get('CF-Connecting-IP') ||
-    request.headers.get('True-Client-IP') ||
-    request.headers.get('X-Forwarded-For')?.split(',')[0].trim() ||
-    'unknown'
-  );
-}
+export async function generateFingerprint(request, env, fingerprintConfig, cfData) {
+  console.log('Generating fingerprint with config:', JSON.stringify(fingerprintConfig, null, 2));
+  console.log('Fingerprint: CF object:', JSON.stringify(cfData, null, 2));
 
-export async function generateFingerprint(request, env, fingerprintConfig, originalCfData) {
-  // console.log('Generating fingerprint with config:', JSON.stringify(fingerprintConfig, null, 2));
-  // console.log('Fingerprint: Original CF object:', JSON.stringify(originalCfData, null, 2));
-
-  const clientIP = getClientIP(request);
+  const clientIP = cfData.clientIp || request.headers.get('CF-Connecting-IP') || 'unknown';
   const timestamp = Math.floor(Date.now() / 1000);
 
   const parameters = fingerprintConfig.parameters || ['clientIP'];
 
+  const parameterHandlers = {
+    clientIP: () => clientIP,
+    method: () => request.method,
+    url: (param) => {
+      if (param === 'url') return request.url;
+      const url = new URL(request.url);
+      return getNestedValue(url, param.slice(4));
+    },
+    body: () => getRequestBody(request),
+    cf: (param) => getNestedValue(cfData, param.slice(3)),
+    headers: (param) => request.headers.get(param.slice(8)),
+  };
+
   const components = await Promise.all(
     parameters.map(async (param) => {
       let value;
+      const [prefix, ...rest] = param.split('.');
+      const handler = parameterHandlers[prefix];
 
-      if (param.startsWith('cf.')) {
-        value = getNestedValue(originalCfData, param.slice(3));
-        if (value === undefined) {
-          console.warn(`CF property not available for parameter: ${param}`);
-        }
-      } else if (param.startsWith('headers.')) {
-        value = request.headers.get(param.slice(8));
-      } else if (param.startsWith('url.')) {
-        const url = new URL(request.url);
-        value = getNestedValue(url, param.slice(4));
-      } else if (param === 'method') {
-        value = request.method;
-      } else if (param === 'url') {
-        value = request.url;
-      } else if (param === 'body') {
-        value = await getRequestBody(request);
-      } else if (param === 'clientIP') {
-        value = clientIP;
+      if (handler) {
+        value = await handler(param);
       } else {
         value = getNestedValue(request, param);
       }
@@ -92,13 +83,11 @@ export async function generateFingerprint(request, env, fingerprintConfig, origi
     })
   );
 
-  // Ensure clientIP is always included
-  if (!components.includes(clientIP)) {
+  if (!parameters.includes('clientIP')) {
     components.unshift(clientIP);
     console.log('Added clientIP to fingerprint components:', clientIP);
   }
 
-  // Add timestamp
   components.push(timestamp.toString());
   console.log('Added timestamp to fingerprint components:', timestamp);
 

@@ -8,166 +8,141 @@ export class RateLimiter {
 
   async fetch(request) {
     console.log('RateLimiter: Received request');
-    let rule;
-    try {
-      rule = JSON.parse(request.headers.get('X-Rate-Limit-Config'));
-      console.log('RateLimiter: Parsed rule:', JSON.stringify(rule, null, 2));
-    } catch (error) {
-      console.error('RateLimiter: Error parsing rule:', error);
-      return new Response(JSON.stringify({ error: 'Rule parsing error' }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+    const rule = this.parseRule(request);
+    if (!rule) {
+      return this.errorResponse('Invalid or missing rule');
     }
 
-    console.log('RateLimiter: Received rule:', JSON.stringify(rule, null, 2));
-
-    if (!rule || !rule.rateLimit || !rule.rateLimit.limit) {
-      console.error('RateLimiter: Invalid or missing rule');
-      return new Response(JSON.stringify({ error: 'Invalid or missing rule' }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    // Check if this is a rate limit info request
     if (request.url.endsWith('/_ratelimit')) {
       return this.getRateLimitInfo(request, rule);
     }
 
     try {
+      const payload = await request.json();
+      const { cf, originalUrl, method } = payload;
+
       const now = Math.floor(Date.now() / 1000);
-
-      let bucket;
-      let clientIdentifier;
-
-      // Parse CF data from header
-      const cfData = JSON.parse(request.headers.get('X-CF-Data') || '{}');
-      console.log('RateLimiter: Parsed CF data:', JSON.stringify(cfData, null, 2));
-
-      // Log all headers for debugging
-      console.log('RateLimiter: All request headers:', Object.fromEntries([...request.headers]));
-
-      if (rule.fingerprint && rule.fingerprint.parameters) {
-        console.log('RateLimiter: Generating fingerprint');
-        const fingerprint = await generateFingerprint(request, this.env, rule.fingerprint, cfData);
-        console.log('RateLimiter: Generated fingerprint:', fingerprint);
-        clientIdentifier = fingerprint;
-        const fingerprintKey = `rate_limit:${rule.name}:fingerprint:${fingerprint}`;
-        bucket = await this.getBucket(fingerprintKey, rule.rateLimit.limit, now);
-      } else {
-        const ip =
-          request.headers.get('CF-Connecting-IP') ||
-          request.headers.get('X-Forwarded-For') ||
-          request.headers.get('True-Client-IP') ||
-          'unknown';
-        console.log('RateLimiter: Client IP:', ip);
-        clientIdentifier = ip;
-        const ipKey = `rate_limit:${rule.name}:ip:${ip}`;
-        bucket = await this.getBucket(ipKey, rule.rateLimit.limit, now);
-      }
-
-      bucket = this.refillBucket(bucket, rule.rateLimit.limit, rule.rateLimit.period, now);
-
-      console.log('RateLimiter: Bucket:', JSON.stringify(bucket, null, 2));
+      const { bucket, clientIdentifier } = await this.getBucketAndIdentifier(
+        request,
+        rule,
+        now,
+        cf
+      );
 
       const isAllowed = bucket.tokens >= 1;
+      console.log(
+        `RateLimiter: Request ${isAllowed ? 'allowed' : 'denied'} for ${clientIdentifier}`
+      );
 
       if (isAllowed) {
-        console.log('RateLimiter: Request allowed, tokens before decrement:', bucket.tokens);
         bucket.tokens -= 1;
-        console.log('RateLimiter: Tokens after decrement:', bucket.tokens);
         await this.state.storage.put(bucket.key, bucket);
-        console.log('RateLimiter: Updated bucket in storage');
-
-        const resetTime = Math.ceil(
-          now + (1 - bucket.tokens) / (rule.rateLimit.limit / rule.rateLimit.period)
-        );
-
-        return new Response(
-          JSON.stringify({
-            allowed: true,
-            remaining: bucket.tokens,
-            limit: rule.rateLimit.limit,
-            period: rule.rateLimit.period,
-            reset: resetTime,
-            action: rule.action,
-            clientIdentifier: clientIdentifier,
-          }),
-          {
-            status: 200,
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Rate-Limit-Remaining': bucket.tokens.toFixed(6),
-              'X-Rate-Limit-Limit': rule.rateLimit.limit.toString(),
-              'X-Rate-Limit-Period': rule.rateLimit.period.toString(),
-              'X-Rate-Limit-Reset': resetTime.toString(),
-              'X-Client-Identifier': clientIdentifier,
-            },
-          }
-        );
-      } else {
-        console.log('RateLimiter: Rate limit exceeded, current tokens:', bucket.tokens);
-        const retryAfter = (
-          (1 - bucket.tokens) /
-          (rule.rateLimit.limit / rule.rateLimit.period)
-        ).toFixed(3);
-
-        return new Response(
-          JSON.stringify({
-            allowed: false,
-            retryAfter: parseFloat(retryAfter),
-            limit: rule.rateLimit.limit,
-            period: rule.rateLimit.period,
-            reset: Math.ceil(now + parseFloat(retryAfter)),
-            action: rule.action,
-            clientIdentifier: clientIdentifier,
-          }),
-          {
-            status: 429,
-            headers: {
-              'Content-Type': 'application/json',
-              'Retry-After': retryAfter,
-              'X-Rate-Limit-Limit': rule.rateLimit.limit.toString(),
-              'X-Rate-Limit-Period': rule.rateLimit.period.toString(),
-              'X-Rate-Limit-Reset': Math.ceil(now + parseFloat(retryAfter)).toString(),
-              'X-Client-Identifier': clientIdentifier,
-            },
-          }
-        );
       }
+
+      const resetTime = Math.ceil(
+        now + (1 - bucket.tokens) / (rule.rateLimit.limit / rule.rateLimit.period)
+      );
+      const retryAfter = (
+        (1 - bucket.tokens) /
+        (rule.rateLimit.limit / rule.rateLimit.period)
+      ).toFixed(3);
+
+      return this.createResponse(isAllowed, bucket, rule, resetTime, retryAfter, clientIdentifier);
     } catch (error) {
       console.error('RateLimiter: Unexpected error:', error);
-      return new Response(JSON.stringify({ error: 'Unexpected error', details: error.message }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return this.errorResponse('Unexpected error', 500);
     }
   }
 
-  async getRateLimitInfo(request, rule) {
-    console.log('RateLimiter: Getting rate limit info');
-
+  parseRule(request) {
     try {
+      const rule = JSON.parse(request.headers.get('X-Rate-Limit-Config'));
+      console.log('RateLimiter: Parsed rule:', JSON.stringify(rule, null, 2));
+      return rule?.rateLimit?.limit ? rule : null;
+    } catch (error) {
+      console.error('RateLimiter: Error parsing rule:', error);
+      return null;
+    }
+  }
+
+  async getBucketAndIdentifier(request, rule, now, cfData) {
+    let clientIdentifier, bucketKey;
+
+    if (rule.fingerprint?.parameters) {
+      clientIdentifier = await generateFingerprint(request, this.env, rule.fingerprint, cfData);
+      bucketKey = `rate_limit:${rule.name}:fingerprint:${clientIdentifier}`;
+    } else {
+      clientIdentifier = cfData.clientIp || request.headers.get('CF-Connecting-IP') || 'unknown';
+      bucketKey = `rate_limit:${rule.name}:ip:${clientIdentifier}`;
+    }
+
+    let bucket = await this.state.storage.get(bucketKey);
+    if (!bucket) {
+      bucket = { key: bucketKey, tokens: rule.rateLimit.limit, lastRefill: now };
+    }
+
+    bucket = this.refillBucket(bucket, rule.rateLimit.limit, rule.rateLimit.period, now);
+    return { bucket, clientIdentifier };
+  }
+
+  refillBucket(bucket, limit, period, now) {
+    if (period <= 0) {
+      console.error('RateLimiter: Invalid period', period);
+      return bucket;
+    }
+    const elapsed = Math.max(0, now - bucket.lastRefill);
+    const rate = limit / period;
+    bucket.tokens = Math.min(limit, bucket.tokens + elapsed * rate);
+    bucket.lastRefill = now;
+    return bucket;
+  }
+
+  createResponse(isAllowed, bucket, rule, resetTime, retryAfter, clientIdentifier) {
+    const headers = {
+      'Content-Type': 'application/json',
+      'X-Rate-Limit-Limit': rule.rateLimit.limit.toString(),
+      'X-Rate-Limit-Period': rule.rateLimit.period.toString(),
+      'X-Rate-Limit-Reset': resetTime.toString(),
+      'X-Client-Identifier': clientIdentifier,
+    };
+
+    const responseBody = {
+      allowed: isAllowed,
+      limit: rule.rateLimit.limit,
+      period: rule.rateLimit.period,
+      reset: resetTime,
+      action: rule.action,
+      clientIdentifier: clientIdentifier,
+    };
+
+    if (isAllowed) {
+      const remainingTokens = Math.max(0, bucket.tokens - 1); // Subtract 1 to account for current request
+      headers['X-Rate-Limit-Remaining'] = remainingTokens.toFixed(6);
+      responseBody.remaining = Number(remainingTokens.toFixed(6)); // Round to 6 decimal places
+    } else {
+      headers['Retry-After'] = retryAfter;
+      responseBody.retryAfter = parseFloat(retryAfter);
+    }
+
+    return new Response(JSON.stringify(responseBody), {
+      status: isAllowed ? 200 : 429,
+      headers: headers,
+    });
+  }
+
+  errorResponse(message, status = 200) {
+    return new Response(JSON.stringify({ error: message }), {
+      status: status,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  async getRateLimitInfo(request, rule) {
+    try {
+      const payload = await request.json();
+      const { cf } = payload;
       const now = Math.floor(Date.now() / 1000);
-
-      let bucket;
-      if (rule.fingerprint && rule.fingerprint.parameters) {
-        console.log('RateLimiter: Generating fingerprint for info');
-        const fingerprint = await generateFingerprint(request, this.env, rule.fingerprint);
-        console.log('RateLimiter: Generated fingerprint for info:', fingerprint);
-        const fingerprintKey = `rate_limit:${rule.name}:fingerprint:${fingerprint}`;
-        bucket = await this.getBucket(fingerprintKey, rule.rateLimit.limit, now);
-      } else {
-        const ip = request.headers.get('CF-Connecting-IP');
-        console.log('RateLimiter: Client IP for info:', ip);
-        const ipKey = `rate_limit:${rule.name}:ip:${ip}`;
-        bucket = await this.getBucket(ipKey, rule.rateLimit.limit, now);
-      }
-
-      bucket = this.refillBucket(bucket, rule.rateLimit.limit, rule.rateLimit.period, now);
-
-      console.log('RateLimiter: Bucket for info:', JSON.stringify(bucket, null, 2));
+      const { bucket } = await this.getBucketAndIdentifier(request, rule, now, cf);
 
       const resetTime = Math.ceil(
         now +
@@ -188,28 +163,7 @@ export class RateLimiter {
       );
     } catch (error) {
       console.error('RateLimiter: Unexpected error in getRateLimitInfo:', error);
-      return new Response(JSON.stringify({ error: 'Unexpected error' }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return this.errorResponse('Unexpected error', 500);
     }
-  }
-
-  async getBucket(key, limit, now) {
-    let bucket = await this.state.storage.get(key);
-    if (!bucket) {
-      console.log(`RateLimiter: Creating new bucket for key ${key}`);
-      bucket = { key, tokens: limit, lastRefill: now };
-    }
-    return bucket;
-  }
-
-  refillBucket(bucket, limit, period, now) {
-    const elapsed = Math.max(0, now - bucket.lastRefill);
-    const rate = limit / period;
-    bucket.tokens = Math.min(limit, bucket.tokens + elapsed * rate);
-    bucket.lastRefill = now;
-    console.log(`RateLimiter: Refilled bucket, new token count: ${bucket.tokens}`);
-    return bucket;
   }
 }
