@@ -106,6 +106,15 @@ function evaluateStringCondition(fieldValue, operator, value) {
   }
 }
 
+function getNestedValue(obj, path) {
+  return path.split('.').reduce((current, key) => {
+    if (current && typeof current === 'object' && key in current) {
+      return current[key];
+    }
+    return undefined;
+  }, obj);
+}
+
 async function getFieldValue(request, field) {
   const url = new URL(request.url);
   const cf = request.cf || {};
@@ -118,12 +127,11 @@ async function getFieldValue(request, field) {
   }
 
   if (field.startsWith('url.')) {
-    const urlProp = field.substring('url.'.length);
-    return url[urlProp] || '';
+    return getNestedValue(url, field.substring('url.'.length)) || '';
   }
 
   if (field.startsWith('cf.')) {
-    return getCfValue(cf, field.substring('cf.'.length)) || '';
+    return getNestedValue(cf, field.substring('cf.'.length)) || '';
   }
 
   if (field in fieldFunctions) {
@@ -134,11 +142,11 @@ async function getFieldValue(request, field) {
   return '';
 }
 
-function getCfValue(cf, path) {
-  return path.split('.').reduce((obj, key) => {
-    if (obj && typeof obj === 'object' && key in obj) {
-      return obj[key];
-    }
-    return undefined;
-  }, cf);
-}
+// function getCfValue(cf, path) {
+//   return path.split('.').reduce((obj, key) => {
+//     if (obj && typeof obj === 'object' && key in obj) {
+//       return obj[key];
+//     }
+//     return undefined;
+//   }, cf);
+// }

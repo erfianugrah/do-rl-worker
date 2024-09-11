@@ -1,5 +1,4 @@
 import { generateFingerprint } from './fingerprint.js';
-import { evaluateCondition } from './condition-evaluator.js';
 
 export class RateLimiter {
   constructor(state, env) {
@@ -12,6 +11,7 @@ export class RateLimiter {
     let rule;
     try {
       rule = JSON.parse(request.headers.get('X-Rate-Limit-Config'));
+      console.log('RateLimiter: Parsed rule:', JSON.stringify(rule, null, 2));
     } catch (error) {
       console.error('RateLimiter: Error parsing rule:', error);
       return new Response(JSON.stringify({ error: 'Rule parsing error' }), {
@@ -41,12 +41,16 @@ export class RateLimiter {
       let bucket;
       let clientIdentifier;
 
+      // Parse CF data from header
+      const cfData = JSON.parse(request.headers.get('X-CF-Data') || '{}');
+      console.log('RateLimiter: Parsed CF data:', JSON.stringify(cfData, null, 2));
+
       // Log all headers for debugging
       console.log('RateLimiter: All request headers:', Object.fromEntries([...request.headers]));
 
       if (rule.fingerprint && rule.fingerprint.parameters) {
         console.log('RateLimiter: Generating fingerprint');
-        const fingerprint = await generateFingerprint(request, this.env, rule.fingerprint);
+        const fingerprint = await generateFingerprint(request, this.env, rule.fingerprint, cfData);
         console.log('RateLimiter: Generated fingerprint:', fingerprint);
         clientIdentifier = fingerprint;
         const fingerprintKey = `rate_limit:${rule.name}:fingerprint:${fingerprint}`;
@@ -70,9 +74,11 @@ export class RateLimiter {
       const isAllowed = bucket.tokens >= 1;
 
       if (isAllowed) {
-        console.log('RateLimiter: Request allowed');
+        console.log('RateLimiter: Request allowed, tokens before decrement:', bucket.tokens);
         bucket.tokens -= 1;
+        console.log('RateLimiter: Tokens after decrement:', bucket.tokens);
         await this.state.storage.put(bucket.key, bucket);
+        console.log('RateLimiter: Updated bucket in storage');
 
         const resetTime = Math.ceil(
           now + (1 - bucket.tokens) / (rule.rateLimit.limit / rule.rateLimit.period)
@@ -101,7 +107,7 @@ export class RateLimiter {
           }
         );
       } else {
-        console.log('RateLimiter: Rate limit exceeded');
+        console.log('RateLimiter: Rate limit exceeded, current tokens:', bucket.tokens);
         const retryAfter = (
           (1 - bucket.tokens) /
           (rule.rateLimit.limit / rule.rateLimit.period)
@@ -137,21 +143,6 @@ export class RateLimiter {
         headers: { 'Content-Type': 'application/json' },
       });
     }
-  }
-
-  async evaluateRequestMatch(request, requestMatch) {
-    if (!requestMatch || !requestMatch.conditions || requestMatch.conditions.length === 0) {
-      return true; // If no conditions are specified, the request matches by default
-    }
-
-    for (const condition of requestMatch.conditions) {
-      const result = await evaluateCondition(request, condition);
-      if (!result) {
-        return false; // If any condition fails, the request doesn't match
-      }
-    }
-
-    return true; // All conditions passed
   }
 
   async getRateLimitInfo(request, rule) {

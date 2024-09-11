@@ -152,6 +152,7 @@ export default {
             ...request.headers,
             'X-Rate-Limit-Config': JSON.stringify(matchingRule),
             'CF-Connecting-IP': clientIP,
+            'X-CF-Data': JSON.stringify(request.cf || {}), // Add this line
           },
           body: request.body,
         });

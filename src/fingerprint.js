@@ -53,9 +53,8 @@ function getClientIP(request) {
 }
 
 export async function generateFingerprint(request, env, fingerprintConfig, originalCfData) {
-  console.log('Generating fingerprint with config:', JSON.stringify(fingerprintConfig, null, 2));
-
-  console.log('Fingerprint: Original CF object:', JSON.stringify(originalCfData, null, 2));
+  // console.log('Generating fingerprint with config:', JSON.stringify(fingerprintConfig, null, 2));
+  // console.log('Fingerprint: Original CF object:', JSON.stringify(originalCfData, null, 2));
 
   const clientIP = getClientIP(request);
   const timestamp = Math.floor(Date.now() / 1000);
