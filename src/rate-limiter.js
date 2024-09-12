@@ -1,33 +1,5 @@
 import { generateFingerprint } from './fingerprint.js';
 
-class SlidingWindowRateLimiter {
-  constructor(limit, windowSize) {
-    this.limit = limit;
-    this.windowSize = windowSize; // in milliseconds
-    this.requests = [];
-  }
-
-  allowRequest(now) {
-    this.requests = this.requests.filter((req) => now - req < this.windowSize);
-    if (this.requests.length < this.limit) {
-      this.requests.push(now);
-      return true;
-    }
-    return false;
-  }
-
-  getRemainingTokens(now) {
-    this.requests = this.requests.filter((req) => now - req < this.windowSize);
-    return Math.max(0, this.limit - this.requests.length);
-  }
-
-  getResetTime(now) {
-    if (this.requests.length === 0) return now + this.windowSize;
-    const oldestRequest = Math.min(...this.requests);
-    return oldestRequest + this.windowSize;
-  }
-}
-
 export class RateLimiter {
   constructor(state, env) {
     this.state = state;
@@ -52,31 +24,24 @@ export class RateLimiter {
       const now = Date.now();
       console.log(`Current time (now): ${now}`);
 
-      const { limiter, clientIdentifier } = await this.getLimiterAndIdentifier(
-        request,
+      const clientIdentifier = await this.getClientIdentifier(request, rule, cf);
+
+      const { isAllowed, remaining, resetTime } = await this.checkRateLimit(
+        clientIdentifier,
         rule,
-        now,
-        cf
+        now
       );
 
-      const isAllowed = limiter.allowRequest(now);
       console.log(
         `RateLimiter: Request ${isAllowed ? 'allowed' : 'denied'} for ${clientIdentifier}`
       );
 
-      const remainingTokens = limiter.getRemainingTokens(now);
-      const resetTime = limiter.getResetTime(now);
-      console.log(`Reset time (milliseconds): ${resetTime}`);
-
-      const retryAfter = Math.max(0, (resetTime - now) / 1000).toFixed(3);
-
-      // Store the updated limiter state
-      await this.state.storage.put(clientIdentifier, JSON.stringify(limiter));
+      const retryAfter = Math.max(0, (resetTime - now) / 1000);
 
       return this.createResponse(
         isAllowed,
         rule,
-        remainingTokens,
+        remaining,
         resetTime,
         retryAfter,
         clientIdentifier
@@ -85,6 +50,38 @@ export class RateLimiter {
       console.error('RateLimiter: Unexpected error:', error);
       return this.errorResponse('Unexpected error', 500);
     }
+  }
+
+  async checkRateLimit(clientIdentifier, rule, now) {
+    const windowSize = rule.rateLimit.period * 1000;
+    const limit = rule.rateLimit.limit;
+
+    let data = await this.state.storage.get(clientIdentifier);
+    let timestamps = data ? JSON.parse(data) : [];
+
+    // Remove timestamps outside the current window
+    timestamps = timestamps.filter((ts) => now - ts < windowSize);
+
+    const isAllowed = timestamps.length < limit;
+    if (isAllowed) {
+      timestamps.push(now);
+    }
+
+    // Keep only the most recent 'limit' timestamps
+    if (timestamps.length > limit) {
+      timestamps = timestamps.slice(-limit);
+    }
+
+    await this.state.storage.put(clientIdentifier, JSON.stringify(timestamps));
+
+    const oldestTimestamp = timestamps[0] || now;
+    const resetTime = oldestTimestamp + windowSize;
+
+    return {
+      isAllowed,
+      remaining: Math.max(0, limit - timestamps.length),
+      resetTime,
+    };
   }
 
   parseRule(request) {
@@ -98,42 +95,22 @@ export class RateLimiter {
     }
   }
 
-  async getLimiterAndIdentifier(request, rule, now, cfData) {
-    let clientIdentifier;
-
+  async getClientIdentifier(request, rule, cfData) {
     if (rule.fingerprint?.parameters) {
-      clientIdentifier = await generateFingerprint(request, this.env, rule.fingerprint, cfData);
-      clientIdentifier = `rate_limit:${rule.name}:fingerprint:${clientIdentifier}`;
+      const fingerprint = await generateFingerprint(request, this.env, rule.fingerprint, cfData);
+      return `rate_limit:${rule.name}:fingerprint:${fingerprint}`;
     } else {
-      clientIdentifier = cfData.clientIp || request.headers.get('CF-Connecting-IP') || 'unknown';
-      clientIdentifier = `rate_limit:${rule.name}:ip:${clientIdentifier}`;
+      const clientIp = cfData.clientIp || request.headers.get('CF-Connecting-IP') || 'unknown';
+      return `rate_limit:${rule.name}:ip:${clientIp}`;
     }
-
-    let limiterData = await this.state.storage.get(clientIdentifier);
-    let limiter;
-
-    if (limiterData) {
-      limiter = Object.assign(
-        new SlidingWindowRateLimiter(rule.rateLimit.limit, rule.rateLimit.period * 1000),
-        JSON.parse(limiterData)
-      );
-      limiter.requests = limiter.requests.filter((req) => now - req < limiter.windowSize);
-    } else {
-      limiter = new SlidingWindowRateLimiter(rule.rateLimit.limit, rule.rateLimit.period * 1000);
-    }
-
-    return { limiter, clientIdentifier };
   }
 
-  createResponse(isAllowed, rule, remainingTokens, resetTime, retryAfter, clientIdentifier) {
-    const resetTimeSeconds = Math.floor(resetTime / 1000);
-    console.log(`Reset time (seconds): ${resetTimeSeconds}`);
-
+  createResponse(isAllowed, rule, remaining, resetTime, retryAfter, clientIdentifier) {
     const headers = {
       'Content-Type': 'application/json',
       'X-Rate-Limit-Limit': rule.rateLimit.limit.toString(),
-      'X-Rate-Limit-Remaining': remainingTokens.toFixed(3),
-      'X-Rate-Limit-Reset': resetTimeSeconds.toString(),
+      'X-Rate-Limit-Remaining': remaining.toString(),
+      'X-Rate-Limit-Reset': Math.floor(resetTime / 1000).toString(),
       'X-Rate-Limit-Reset-Precise': (resetTime / 1000).toFixed(3),
       'X-Rate-Limit-Period': rule.rateLimit.period.toString(),
       'X-Client-Identifier': clientIdentifier,
@@ -142,8 +119,8 @@ export class RateLimiter {
     const responseBody = {
       allowed: isAllowed,
       limit: rule.rateLimit.limit,
-      remaining: parseFloat(remainingTokens.toFixed(3)),
-      reset: resetTimeSeconds,
+      remaining: remaining,
+      reset: Math.floor(resetTime / 1000),
       resetFormatted: new Date(resetTime).toUTCString(),
       period: rule.rateLimit.period,
       action: rule.action,
@@ -151,8 +128,8 @@ export class RateLimiter {
     };
 
     if (!isAllowed) {
-      headers['Retry-After'] = retryAfter;
-      responseBody.retryAfter = parseFloat(retryAfter);
+      headers['Retry-After'] = retryAfter.toString();
+      responseBody.retryAfter = parseFloat(retryAfter.toFixed(3));
     }
 
     console.log('Response headers:', headers);
@@ -176,21 +153,14 @@ export class RateLimiter {
       const payload = await request.json();
       const { cf } = payload;
       const now = Date.now();
-      const { limiter, clientIdentifier } = await this.getLimiterAndIdentifier(
-        request,
-        rule,
-        now,
-        cf
-      );
+      const clientIdentifier = await this.getClientIdentifier(request, rule, cf);
 
-      const remainingTokens = limiter.getRemainingTokens(now);
-      const resetTime = limiter.getResetTime(now);
-      const resetTimeSeconds = Math.floor(resetTime / 1000);
+      const { remaining, resetTime } = await this.checkRateLimit(clientIdentifier, rule, now);
 
       const responseBody = {
         limit: rule.rateLimit.limit,
-        remaining: parseFloat(remainingTokens.toFixed(3)),
-        reset: resetTimeSeconds,
+        remaining: remaining,
+        reset: Math.floor(resetTime / 1000),
         resetFormatted: new Date(resetTime).toUTCString(),
         period: rule.rateLimit.period,
       };
