@@ -34,7 +34,35 @@ const fieldFunctions = {
   },
 };
 
-export async function evaluateCondition(request, condition) {
+export async function evaluateConditions(request, conditions, logic = 'and') {
+  console.log(`Evaluating conditions with logic: ${logic}`);
+  console.log(`Conditions:`, JSON.stringify(conditions, null, 2));
+
+  if (!Array.isArray(conditions)) {
+    console.warn('Invalid conditions structure');
+    return false;
+  }
+
+  for (const condition of conditions) {
+    let result;
+    if (condition.type === 'group') {
+      result = await evaluateConditions(request, condition.conditions, condition.logic);
+    } else {
+      result = await evaluateCondition(request, condition);
+    }
+
+    if (logic === 'or' && result) {
+      return true;
+    }
+    if (logic === 'and' && !result) {
+      return false;
+    }
+  }
+
+  return logic === 'and';
+}
+
+async function evaluateCondition(request, condition) {
   const { field, operator, value } = condition;
 
   console.log(`Evaluating condition: ${field} ${operator} ${value}`);

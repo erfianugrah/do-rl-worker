@@ -1,7 +1,7 @@
 import { RateLimiter } from './rate-limiter.js';
 import { ConfigStorage } from './config-storage.js';
 import { serveRateLimitPage, serveRateLimitInfoPage } from './staticpages.js';
-import { evaluateCondition } from './condition-evaluator.js';
+import { evaluateConditions } from './condition-evaluator.js';
 
 // Cache configuration
 let cachedConfig = null;
@@ -36,32 +36,11 @@ async function findMatchingRule(request, rules) {
 }
 
 async function evaluateRequestMatch(request, requestMatch) {
-  console.log('Evaluating request match:', JSON.stringify(requestMatch));
+  console.log('Evaluating request match:', JSON.stringify(requestMatch, null, 2));
 
-  if (!requestMatch) return true;
+  if (!requestMatch || !requestMatch.conditions) return true;
 
-  const conditions = Object.entries(requestMatch)
-    .filter(([key]) => key.startsWith('conditions['))
-    .map(([, value]) => value);
-
-  if (conditions.length === 0) return true;
-
-  const logic = requestMatch.logic || 'AND';
-  console.log('Request match logic:', logic);
-
-  if (logic === 'AND') {
-    for (const condition of conditions) {
-      if (!(await evaluateCondition(request, condition))) return false;
-    }
-    return true;
-  } else if (logic === 'OR') {
-    for (const condition of conditions) {
-      if (await evaluateCondition(request, condition)) return true;
-    }
-    return false;
-  }
-
-  throw new Error(`Unknown logic operator: ${logic}`);
+  return await evaluateConditions(request, requestMatch.conditions, requestMatch.logic);
 }
 
 async function handleRateLimit(request, env, matchingRule) {
@@ -111,7 +90,7 @@ function applyRateLimitHeaders(response, rateLimitResponse) {
 }
 
 const actionHandlers = {
-  log: async (request) => {
+  log: (request) => {
     console.log('Logging rate limit exceed');
     return fetch(request);
   },
