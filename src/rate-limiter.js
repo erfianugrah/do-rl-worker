@@ -87,8 +87,20 @@ export class RateLimiter {
   parseRule(request) {
     try {
       const rule = JSON.parse(request.headers.get('X-Rate-Limit-Config'));
-      console.log('RateLimiter: Parsed rule:', JSON.stringify(rule, null, 2));
-      return rule?.rateLimit?.limit ? rule : null;
+      if (
+        rule &&
+        rule.name &&
+        rule.rateLimit &&
+        typeof rule.rateLimit.limit === 'number' &&
+        typeof rule.rateLimit.period === 'number' &&
+        rule.action &&
+        rule.action.type
+      ) {
+        console.log('RateLimiter: Parsed rule:', JSON.stringify(rule, null, 2));
+        return rule;
+      }
+      console.error('RateLimiter: Invalid rule structure:', JSON.stringify(rule, null, 2));
+      return null;
     } catch (error) {
       console.error('RateLimiter: Error parsing rule:', error);
       return null;

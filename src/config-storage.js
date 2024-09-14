@@ -6,18 +6,21 @@ export class ConfigStorage {
   async fetch(request) {
     if (request.method === 'GET') {
       const config = await this.state.storage.get('config');
-      return new Response(config || '{"rules":[]}', {
+      return new Response(config || '{"version":"1.0","rules":[]}', {
         headers: { 'Content-Type': 'application/json' },
       });
     } else if (request.method === 'POST') {
       const config = await request.json();
+      config.version = '1.0';
 
-      // Convert limit and period to numbers
       if (config.rules) {
         config.rules.forEach((rule) => {
           if (rule.rateLimit) {
             rule.rateLimit.limit = Number(rule.rateLimit.limit);
             rule.rateLimit.period = Number(rule.rateLimit.period);
+          }
+          if (rule.action && rule.action.type === 'customResponse') {
+            rule.action.statusCode = Number(rule.action.statusCode);
           }
         });
       }

@@ -21,6 +21,12 @@ async function getConfig(env) {
   );
   cachedConfig = await configResponse.json();
   lastConfigFetch = now;
+
+  // Validate config version
+  if (!cachedConfig.version || cachedConfig.version !== '1.0') {
+    console.warn('Unsupported config version:', cachedConfig.version);
+  }
+
   return cachedConfig;
 }
 
@@ -52,13 +58,11 @@ async function handleRateLimit(request, env, matchingRule) {
   headers.set('Content-Type', 'application/json');
 
   const payload = {
-    // originalUrl: request.url,
-    // method: request.method,
     cf: request.cf || {},
   };
 
   const rateLimiterRequest = new Request(request.url, {
-    method: 'POST', // Change to POST to send a body
+    method: 'POST',
     headers: headers,
     body: JSON.stringify(payload),
   });
