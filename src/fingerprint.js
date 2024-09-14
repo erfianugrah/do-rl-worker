@@ -1,3 +1,5 @@
+// fingerprint.js
+
 import { hashValue } from './utils.js';
 
 const BODY_SIZE_LIMIT = 524288; // 512 KB in bytes
@@ -27,7 +29,7 @@ async function getRequestBody(request) {
       }
     }
 
-    return await hashValue(body);
+    return body;
   } catch (error) {
     console.error('Error reading request body for fingerprinting:', error);
     return '';
@@ -61,9 +63,32 @@ export async function generateFingerprint(request, env, fingerprintConfig, cfDat
       const url = new URL(request.url);
       return getNestedValue(url, param.slice(4));
     },
-    body: () => getRequestBody(request),
+    body: async (param) => {
+      if (param === 'body') {
+        return await getRequestBody(request);
+      } else if (param.startsWith('body.custom:')) {
+        const bodyContent = await getRequestBody(request);
+        try {
+          const jsonBody = JSON.parse(bodyContent);
+          const fieldPath = param.split(':')[1];
+          return getNestedValue(jsonBody, fieldPath) || '';
+        } catch (error) {
+          console.error('Error parsing JSON body:', error);
+          return '';
+        }
+      }
+    },
     cf: (param) => getNestedValue(cfData, param.slice(3)),
-    headers: (param) => request.headers.get(param.slice(8)),
+    headers: (param) => {
+      if (param.startsWith('headers.name:')) {
+        const headerName = param.split(':')[1];
+        return request.headers.get(headerName) || '';
+      } else if (param.startsWith('headers.nameValue:')) {
+        const [, headerName, expectedValue] = param.split(':');
+        const actualValue = request.headers.get(headerName);
+        return actualValue === expectedValue ? `${headerName}:${actualValue}` : '';
+      }
+    },
   };
 
   const components = await Promise.all(
@@ -71,7 +96,6 @@ export async function generateFingerprint(request, env, fingerprintConfig, cfDat
       let value;
       const [prefix, ...rest] = param.split('.');
       const handler = parameterHandlers[prefix];
-
       if (handler) {
         value = await handler(param);
       } else {

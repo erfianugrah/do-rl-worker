@@ -63,11 +63,22 @@ export async function evaluateConditions(request, conditions, logic = 'and') {
 }
 
 async function evaluateCondition(request, condition) {
-  const { field, operator, value } = condition;
+  const { field, operator, value, headerName, headerValue } = condition;
 
   console.log(`Evaluating condition: ${field} ${operator} ${value}`);
 
-  let fieldValue = await getFieldValue(request, field);
+  let fieldValue;
+  if (field === 'headers') {
+    fieldValue = request.headers.get(headerName) || '';
+  } else if (field === 'headers.name') {
+    fieldValue = request.headers.has(headerName) ? headerName : '';
+  } else if (field === 'headers.nameValue') {
+    fieldValue =
+      request.headers.get(headerName) === headerValue ? `${headerName}: ${headerValue}` : '';
+  } else {
+    fieldValue = await getFieldValue(request, field);
+  }
+
   console.log(`Field value: ${fieldValue}`);
 
   // Convert to number for numeric fields
