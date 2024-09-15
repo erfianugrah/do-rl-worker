@@ -46,17 +46,35 @@ function getNestedValue(obj, path) {
     );
 }
 
-export async function generateFingerprint(request, env, fingerprintConfig, cfData) {
+function getClientIP(request, cfData) {
+  if (cfData && cfData.clientIp) return cfData.clientIp;
+
+  const cfConnectingIP = request.headers.get('CF-Connecting-IP');
+  if (cfConnectingIP) return cfConnectingIP;
+
+  const trueClientIP = request.headers.get('True-Client-IP');
+  if (trueClientIP) return trueClientIP;
+
+  const forwardedFor = request.headers.get('X-Forwarded-For');
+  if (forwardedFor) {
+    // X-Forwarded-For can contain multiple IPs; we want the first (original) one
+    return forwardedFor.split(',')[0].trim();
+  }
+
+  return 'unknown';
+}
+
+export async function generateFingerprint(request, env, fingerprintConfig, cfData, bodyContent) {
   console.log('Generating fingerprint with config:', JSON.stringify(fingerprintConfig, null, 2));
   console.log('Fingerprint: CF object:', JSON.stringify(cfData, null, 2));
 
-  const clientIP = cfData.clientIp || request.headers.get('CF-Connecting-IP') || 'unknown';
+  // const clientIP = cfData.clientIp || request.headers.get('CF-Connecting-IP') || 'unknown';
   const timestamp = Math.floor(Date.now() / 1000);
 
   const parameters = fingerprintConfig.parameters || ['clientIP'];
 
   const parameterHandlers = {
-    clientIP: () => clientIP,
+    clientIP: () => getClientIP(request),
     method: () => request.method,
     url: (param) => {
       if (param === 'url') return request.url;
@@ -65,17 +83,10 @@ export async function generateFingerprint(request, env, fingerprintConfig, cfDat
     },
     body: async (param) => {
       if (param === 'body') {
-        return await getRequestBody(request);
+        return bodyContent;
       } else if (param.startsWith('body.custom:')) {
-        const bodyContent = await getRequestBody(request);
-        try {
-          const jsonBody = JSON.parse(bodyContent);
-          const fieldPath = param.split(':')[1];
-          return getNestedValue(jsonBody, fieldPath) || '';
-        } catch (error) {
-          console.error('Error parsing JSON body:', error);
-          return '';
-        }
+        const fieldPath = param.split(':')[1];
+        return extractBodyField(bodyContent, fieldPath);
       }
     },
     cf: (param) => getNestedValue(cfData, param.slice(3)),
@@ -107,10 +118,10 @@ export async function generateFingerprint(request, env, fingerprintConfig, cfDat
     })
   );
 
-  if (!parameters.includes('clientIP')) {
-    components.unshift(clientIP);
-    console.log('Added clientIP to fingerprint components:', clientIP);
-  }
+  // if (!parameters.includes('clientIP')) {
+  //   components.unshift(clientIP);
+  //   console.log('Added clientIP to fingerprint components:', clientIP);
+  // }
 
   components.push(timestamp.toString());
   console.log('Added timestamp to fingerprint components:', timestamp);
@@ -120,4 +131,17 @@ export async function generateFingerprint(request, env, fingerprintConfig, cfDat
   const fingerprint = await hashValue(components.join('|'));
   console.log('Generated fingerprint:', fingerprint);
   return fingerprint;
+}
+
+function extractBodyField(bodyContent, fieldPath) {
+  // Try parsing as JSON first
+  try {
+    const jsonBody = JSON.parse(bodyContent);
+    return getNestedValue(jsonBody, fieldPath) || '';
+  } catch (error) {
+    // If not JSON, treat as plain text or other format
+    console.log('Body is not JSON, treating as plain text');
+    // For non-JSON bodies, we can't extract nested fields, so return the whole body
+    return bodyContent;
+  }
 }

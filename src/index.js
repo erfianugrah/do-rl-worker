@@ -57,9 +57,22 @@ async function handleRateLimit(request, env, matchingRule) {
   headers.set('X-Rate-Limit-Config', JSON.stringify(matchingRule));
   headers.set('Content-Type', 'application/json');
 
-  const payload = {
-    cf: request.cf || {},
-  };
+  let payload;
+  try {
+    // Clone the request to read the body without consuming it
+    const clonedRequest = request.clone();
+    const bodyText = await clonedRequest.text();
+    payload = {
+      cf: request.cf || {},
+      body: bodyText,
+    };
+  } catch (error) {
+    console.error('Error reading request body:', error);
+    payload = {
+      cf: request.cf || {},
+      body: '',
+    };
+  }
 
   const rateLimiterRequest = new Request(request.url, {
     method: 'POST',
