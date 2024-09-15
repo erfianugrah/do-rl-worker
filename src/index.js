@@ -16,13 +16,10 @@ async function getConfig(env) {
 
   const configStorageId = env.CONFIG_STORAGE.idFromName('global');
   const configStorage = env.CONFIG_STORAGE.get(configStorageId);
-  const configResponse = await configStorage.fetch(
-    new Request('https://rate-limiter-ui/config', { method: 'GET' })
-  );
+  const configResponse = await configStorage.fetch(new Request('https://rate-limiter-ui/config'));
   cachedConfig = await configResponse.json();
   lastConfigFetch = now;
 
-  // Validate config version
   if (!cachedConfig.version || cachedConfig.version !== '1.0') {
     console.warn('Unsupported config version:', cachedConfig.version);
   }
@@ -59,24 +56,19 @@ async function handleRateLimit(request, env, matchingRule) {
 
   let payload;
   try {
-    // Clone the request to read the body without consuming it
     const clonedRequest = request.clone();
-    const bodyText = await clonedRequest.text();
     payload = {
       cf: request.cf || {},
-      body: bodyText,
+      body: await clonedRequest.text(),
     };
   } catch (error) {
     console.error('Error reading request body:', error);
-    payload = {
-      cf: request.cf || {},
-      body: '',
-    };
+    payload = { cf: request.cf || {}, body: '' };
   }
 
   const rateLimiterRequest = new Request(request.url, {
     method: 'POST',
-    headers: headers,
+    headers,
     body: JSON.stringify(payload),
   });
 

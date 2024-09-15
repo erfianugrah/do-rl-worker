@@ -114,7 +114,7 @@ async function evaluateCondition(request, condition) {
   if (field === 'clientIP' && operator === 'eq') {
     return isIPInCIDR(fieldValue, value);
   }
-  // Convert to number for numeric fields
+
   const numericFields = [
     'cf.asn',
     'cf.botManagement.score',
@@ -128,7 +128,6 @@ async function evaluateCondition(request, condition) {
     return evaluateNumericCondition(fieldValue, operator, value);
   }
 
-  // String comparisons
   console.log(`String comparison: "${fieldValue}" ${operator} "${value}"`);
   return evaluateStringCondition(fieldValue, operator, value);
 }
@@ -218,8 +217,7 @@ async function getFieldValue(request, field) {
   console.log(`Getting field value for: ${field}`);
 
   if (field.startsWith('headers.')) {
-    const headerName = field.substring('headers.'.length);
-    return request.headers.get(headerName) || '';
+    return request.headers.get(field.substring('headers.'.length)) || '';
   }
 
   if (field.startsWith('url.')) {

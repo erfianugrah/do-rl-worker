@@ -60,7 +60,8 @@ export class RateLimiter {
     let timestamps = data ? JSON.parse(data) : [];
 
     // Remove timestamps outside the current window
-    timestamps = timestamps.filter((ts) => now - ts < windowSize);
+    const windowStart = now - windowSize;
+    timestamps = timestamps.filter((ts) => ts >= windowStart);
 
     const isAllowed = timestamps.length < limit;
     if (isAllowed) {
@@ -75,7 +76,7 @@ export class RateLimiter {
     await this.state.storage.put(clientIdentifier, JSON.stringify(timestamps));
 
     const oldestTimestamp = timestamps[0] || now;
-    const resetTime = oldestTimestamp + windowSize;
+    const resetTime = Math.max(oldestTimestamp + windowSize, now + 1000);
 
     return {
       isAllowed,
@@ -87,15 +88,7 @@ export class RateLimiter {
   parseRule(request) {
     try {
       const rule = JSON.parse(request.headers.get('X-Rate-Limit-Config'));
-      if (
-        rule &&
-        rule.name &&
-        rule.rateLimit &&
-        typeof rule.rateLimit.limit === 'number' &&
-        typeof rule.rateLimit.period === 'number' &&
-        rule.action &&
-        rule.action.type
-      ) {
+      if (rule?.name && rule.rateLimit?.limit && rule.rateLimit?.period && rule.action?.type) {
         console.log('RateLimiter: Parsed rule:', JSON.stringify(rule, null, 2));
         return rule;
       }
@@ -111,14 +104,13 @@ export class RateLimiter {
     if (rule.fingerprint?.parameters) {
       const fingerprint = await generateFingerprint(request, this.env, rule.fingerprint, cfData);
       return `rate_limit:${rule.name}:fingerprint:${fingerprint}`;
-    } else {
-      const clientIp = cfData.clientIp || request.headers.get('CF-Connecting-IP') || 'unknown';
-      return `rate_limit:${rule.name}:ip:${clientIp}`;
     }
+    const clientIp = cfData.clientIp || request.headers.get('CF-Connecting-IP') || 'unknown';
+    return `rate_limit:${rule.name}:ip:${clientIp}`;
   }
 
   createResponse(isAllowed, rule, remaining, resetTime, retryAfter, clientIdentifier) {
-    const headers = {
+    const headers = new Headers({
       'Content-Type': 'application/json',
       'X-Rate-Limit-Limit': rule.rateLimit.limit.toString(),
       'X-Rate-Limit-Remaining': remaining.toString(),
@@ -126,36 +118,36 @@ export class RateLimiter {
       'X-Rate-Limit-Reset-Precise': (resetTime / 1000).toFixed(3),
       'X-Rate-Limit-Period': rule.rateLimit.period.toString(),
       'X-Client-Identifier': clientIdentifier,
-    };
+    });
 
     const responseBody = {
       allowed: isAllowed,
       limit: rule.rateLimit.limit,
-      remaining: remaining,
+      remaining,
       reset: Math.floor(resetTime / 1000),
       resetFormatted: new Date(resetTime).toUTCString(),
       period: rule.rateLimit.period,
       action: rule.action,
-      clientIdentifier: clientIdentifier,
+      clientIdentifier,
     };
 
     if (!isAllowed) {
-      headers['Retry-After'] = retryAfter.toString();
+      headers.set('Retry-After', retryAfter.toString());
       responseBody.retryAfter = parseFloat(retryAfter.toFixed(3));
     }
 
-    console.log('Response headers:', headers);
+    console.log('Response headers:', Object.fromEntries(headers));
     console.log('Response body:', responseBody);
 
     return new Response(JSON.stringify(responseBody), {
       status: isAllowed ? 200 : 429,
-      headers: headers,
+      headers,
     });
   }
 
   errorResponse(message, status = 200) {
     return new Response(JSON.stringify({ error: message }), {
-      status: status,
+      status,
       headers: { 'Content-Type': 'application/json' },
     });
   }
@@ -171,7 +163,7 @@ export class RateLimiter {
 
       const responseBody = {
         limit: rule.rateLimit.limit,
-        remaining: remaining,
+        remaining,
         reset: Math.floor(resetTime / 1000),
         resetFormatted: new Date(resetTime).toUTCString(),
         period: rule.rateLimit.period,
