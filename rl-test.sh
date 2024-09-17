@@ -27,7 +27,7 @@ show_help() {
     echo "  -d <delay>     Delay between requests in seconds (default: 0)"
     echo "  -f <format>    Output format: table, json, or csv (default: table)"
     echo "  -v             Verbose mode: display all headers and response body"
-    echo "  -H <header>    Add custom header (can be used multiple times)"
+    echo "  -H <header>    Add custom header (can be used multiple times: -H 'Header1: Value' -H 'Header2: Value')"
     echo "  -t <timeout>   Set request timeout in seconds (default: 30)"
     echo "  -L             Follow redirects"
     echo "  -h             Show this help message"
@@ -57,7 +57,7 @@ if [ -z "$URL" ]; then
     show_help
 fi
 
-# Validate URL
+# Validate URL format
 if [[ ! $URL =~ ^https?:// ]]; then
     echo "Error: Invalid URL. Please enter a valid HTTP or HTTPS URL."
     exit 1
@@ -77,7 +77,7 @@ parse_headers() {
     local reset=$(echo "$headers" | grep -i "X-Rate-Limit-Reset:" | cut -d' ' -f2 | tr -d '\r')
     local period=$(echo "$headers" | grep -i "X-Rate-Limit-Period:" | cut -d' ' -f2 | tr -d '\r')
     local retry_after=$(echo "$headers" | grep -i "Retry-After:" | cut -d' ' -f2 | tr -d '\r')
-    
+
     echo "$limit|$remaining|$reset|$period|$retry_after"
 }
 
@@ -100,7 +100,7 @@ display_table() {
     local period="$6"
     local retry_after="$7"
     local response_time="$8"
-    
+
     printf "| %-8s | %-11s | %-5s | %-9s | %-19s | %-6s | %-10s | %-8s |\n" \
            "$request_num" "$status_code" "${limit:-N/A}" "${remaining:-N/A}" "$(format_date "$reset")" "${period:-N/A}" "${retry_after:-N/A}" "${response_time}ms"
 }
@@ -115,7 +115,7 @@ display_json() {
     local period="$6"
     local retry_after="$7"
     local response_time="$8"
-    
+
     jq -n \
        --arg rn "$request_num" \
        --arg sc "$status_code" \
@@ -138,7 +138,7 @@ display_csv() {
     local period="$6"
     local retry_after="$7"
     local response_time="$8"
-    
+
     echo "$request_num,$status_code,${limit:-N/A},${remaining:-N/A},$(format_date "$reset"),${period:-N/A},${retry_after:-N/A},$response_time"
 }
 
@@ -146,14 +146,14 @@ display_csv() {
 calculate_stats() {
     local -n times=$1
     local -n codes=$2
-    
+
     # Calculate average response time
     local sum=0
     for time in "${times[@]}"; do
         sum=$((sum + time))
     done
     local avg=$((sum / ${#times[@]}))
-    
+
     # Calculate success rate
     local success=0
     for code in "${codes[@]}"; do
@@ -162,7 +162,7 @@ calculate_stats() {
         fi
     done
     local success_rate=$(bc <<< "scale=2; $success / ${#codes[@]} * 100")
-    
+
     echo "Average Response Time: ${avg}ms"
     echo "Success Rate: ${success_rate}%"
 }
@@ -173,7 +173,7 @@ generate_chart() {
     local -n codes=$2
     local max_height=20
     local width=${#times[@]}
-    
+
     for ((i=0; i<max_height; i++)); do
         for ((j=0; j<width; j++)); do
             if [[ ${codes[j]} -eq 200 ]]; then
@@ -213,15 +213,12 @@ case $OUTPUT_FORMAT in
         ;;
 esac
 
-# Prepare curl command
-CURL_CMD="curl -i -s -H 'Accept: application/json'"
+# Prepare curl command options
+CURL_OPTS="-i -s -H 'Accept: application/json' -m $TIMEOUT"
 for header in "${CUSTOM_HEADERS[@]}"; do
-    CURL_CMD+=" -H '$header'"
+    CURL_OPTS+=" -H '$header'"
 done
-CURL_CMD+=" -m $TIMEOUT"
-if $FOLLOW_REDIRECTS; then
-    CURL_CMD+=" -L"
-fi
+$FOLLOW_REDIRECTS && CURL_OPTS+=" -L"
 
 # Arrays to store response times and status codes
 response_times=()
@@ -229,38 +226,31 @@ status_codes=()
 
 # Main loop
 for i in $(seq 1 $REQUESTS); do
-    # Send request and capture full response (headers and body)
     start_time=$(date +%s%N)
-    response=$(eval $CURL_CMD "$URL")
+    response=$(eval "curl $CURL_OPTS \"$URL\"")
     end_time=$(date +%s%N)
     response_time=$(( (end_time - start_time) / 1000000 ))
-    
+
     # Extract status code
     status_code=$(echo "$response" | grep -i "HTTP/" | tail -n1 | awk '{print $2}')
-    
+
     # Extract headers
     headers=$(echo "$response" | sed -n '1,/^\r$/p')
-    
+
     # Extract body
     body=$(echo "$response" | sed '1,/^\r$/d')
-    
+
     # Parse rate limit headers
     IFS='|' read -r limit remaining reset period retry_after <<< $(parse_headers "$headers")
-    
+
     # Store response time and status code
     response_times+=($response_time)
     status_codes+=($status_code)
-    
+
     # Display results based on output format
     case $OUTPUT_FORMAT in
         table)
-            if [ "$status_code" = "429" ]; then
-                status_color="${RED}"
-            elif [ "$remaining" = "0" ]; then
-                status_color="${YELLOW}"
-            else
-                status_color="${GREEN}"
-            fi
+            [ "$status_code" = "429" ] && status_color="$RED" || status_color="$GREEN"
             echo -e "${status_color}$(display_table "$i" "$status_code" "$limit" "$remaining" "$reset" "$period" "$retry_after" "$response_time")${NC}"
             ;;
         json)
@@ -271,7 +261,7 @@ for i in $(seq 1 $REQUESTS); do
             display_csv "$i" "$status_code" "$limit" "$remaining" "$reset" "$period" "$retry_after" "$response_time"
             ;;
     esac
-    
+
     # Display verbose information if requested
     if $VERBOSE; then
         echo -e "\n${BLUE}Request $i Details:${NC}"
@@ -281,7 +271,7 @@ for i in $(seq 1 $REQUESTS); do
         echo "$body" | jq '.' 2>/dev/null || echo "$body"
         echo -e "${BLUE}------------------------${NC}"
     fi
-    
+
     # Delay before next request (if specified)
     [ "$DELAY" != "0" ] && sleep $DELAY
 done
