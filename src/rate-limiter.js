@@ -1,4 +1,5 @@
 import { generateFingerprint } from './fingerprint.js';
+import { evaluateConditions } from './condition-evaluator.js';
 
 export class RateLimiter {
   constructor(state, env) {
@@ -25,6 +26,23 @@ export class RateLimiter {
       console.log(`Current time (now): ${now}`);
 
       const clientIdentifier = await this.getClientIdentifier(request, rule, cf);
+
+      const matches = await evaluateConditions(
+        request,
+        rule.initialMatch.conditions,
+        rule.initialMatch.logic
+      );
+      if (!matches) {
+        console.log('Request does not match initial conditions, allowing');
+        return this.createResponse(
+          true,
+          rule,
+          rule.rateLimit.limit,
+          now + rule.rateLimit.period * 1000,
+          0,
+          clientIdentifier
+        );
+      }
 
       const { isAllowed, remaining, resetTime } = await this.checkRateLimit(
         clientIdentifier,

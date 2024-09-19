@@ -46,22 +46,15 @@ function getNestedValue(obj, path) {
     );
 }
 
+// Replace the existing getClientIP function with:
 function getClientIP(request, cfData) {
-  if (cfData && cfData.clientIp) return cfData.clientIp;
-
-  const cfConnectingIP = request.headers.get('CF-Connecting-IP');
-  if (cfConnectingIP) return cfConnectingIP;
-
-  const trueClientIP = request.headers.get('True-Client-IP');
-  if (trueClientIP) return trueClientIP;
-
-  const forwardedFor = request.headers.get('X-Forwarded-For');
-  if (forwardedFor) {
-    // X-Forwarded-For can contain multiple IPs; we want the first (original) one
-    return forwardedFor.split(',')[0].trim();
-  }
-
-  return 'unknown';
+  return (
+    request.headers.get('true-client-ip') ||
+    request.headers.get('cf-connecting-ip') ||
+    request.headers.get('x-forwarded-for')?.split(',')[0].trim() ||
+    cfData.clientIp ||
+    'unknown'
+  );
 }
 
 export async function generateFingerprint(request, env, fingerprintConfig, cfData, bodyContent) {

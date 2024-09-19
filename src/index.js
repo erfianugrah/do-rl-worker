@@ -31,7 +31,12 @@ async function findMatchingRule(request, rules) {
   console.log('Finding matching rule for request:', request.url);
   for (const rule of rules) {
     console.log('Evaluating rule:', rule.name);
-    const matches = await evaluateRequestMatch(request, rule.requestMatch);
+
+    const matches = await evaluateConditions(
+      request,
+      rule.initialMatch.conditions,
+      rule.initialMatch.logic
+    );
     console.log(`Rule ${rule.name} matches: ${matches}`);
     if (matches) return rule;
   }
