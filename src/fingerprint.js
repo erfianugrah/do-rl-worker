@@ -1,5 +1,3 @@
-// fingerprint.js
-
 import { hashValue } from './utils.js';
 
 const BODY_SIZE_LIMIT = 524288; // 512 KB in bytes
@@ -37,16 +35,9 @@ async function getRequestBody(request) {
 }
 
 function getNestedValue(obj, path) {
-  return path
-    .split('.')
-    .reduce(
-      (current, key) =>
-        current && typeof current === 'object' && key in current ? current[key] : undefined,
-      obj
-    );
+  return path.split('.').reduce((current, part) => current && current[part], obj);
 }
 
-// Replace the existing getClientIP function with:
 function getClientIP(request, cfData) {
   return (
     request.headers.get('true-client-ip') ||
@@ -57,47 +48,37 @@ function getClientIP(request, cfData) {
   );
 }
 
-export async function generateFingerprint(request, env, fingerprintConfig, cfData, bodyContent) {
+export async function generateFingerprint(request, env, fingerprintConfig, cfData) {
   console.log('Generating fingerprint with config:', JSON.stringify(fingerprintConfig, null, 2));
   console.log('Fingerprint: CF object:', JSON.stringify(cfData, null, 2));
 
   const timestamp = Math.floor(Date.now() / 1000);
   const parameters = fingerprintConfig.parameters || ['clientIP'];
 
-  const parameterHandlers = {
-    clientIP: () => getClientIP(request, cfData),
-    method: () => request.method,
-    url: (param) => {
-      if (param === 'url') return request.url;
-      const url = new URL(request.url);
-      return getNestedValue(url, param.slice(4));
-    },
-    body: async (param) => {
-      if (param === 'body') return bodyContent;
-      if (param.startsWith('body.custom:')) {
-        const fieldPath = param.split(':')[1];
-        return extractBodyField(bodyContent, fieldPath);
-      }
-    },
-    cf: (param) => getNestedValue(cfData, param.slice(3)),
-    headers: (param) => {
-      if (param.startsWith('headers.name:')) {
-        const headerName = param.split(':')[1];
-        return request.headers.get(headerName) || '';
-      }
-      if (param.startsWith('headers.nameValue:')) {
-        const [, headerName, expectedValue] = param.split(':');
-        const actualValue = request.headers.get(headerName);
-        return actualValue === expectedValue ? `${headerName}:${actualValue}` : '';
-      }
-    },
-  };
-
   const components = await Promise.all(
     parameters.map(async (param) => {
-      const [prefix] = param.split('.');
-      const handler = parameterHandlers[prefix];
-      const value = handler ? await handler(param) : getNestedValue(request, param);
+      let value;
+      if (param.startsWith('headers.')) {
+        value = request.headers.get(param.slice(8));
+      } else if (param.startsWith('url.')) {
+        const url = new URL(request.url);
+        value = getNestedValue(url, param.slice(4));
+      } else if (param.startsWith('cf.')) {
+        value = getNestedValue(cfData, param.slice(3));
+      } else if (param === 'clientIP') {
+        value = getClientIP(request, cfData);
+      } else if (param === 'method') {
+        value = request.method;
+      } else if (param === 'url') {
+        value = request.url;
+      } else if (param === 'body' || param.startsWith('body.')) {
+        const bodyContent = await getRequestBody(request);
+        value = param === 'body' ? bodyContent : extractBodyField(bodyContent, param.slice(5));
+      } else {
+        console.warn(`Unsupported fingerprint parameter: ${param}`);
+        return '';
+      }
+
       console.log(`Fingerprint parameter ${param}:`, value !== undefined ? value : '(undefined)');
       return value !== undefined && value !== null ? value.toString() : '';
     })
@@ -113,14 +94,11 @@ export async function generateFingerprint(request, env, fingerprintConfig, cfDat
 }
 
 function extractBodyField(bodyContent, fieldPath) {
-  // Try parsing as JSON first
   try {
     const jsonBody = JSON.parse(bodyContent);
     return getNestedValue(jsonBody, fieldPath) || '';
   } catch (error) {
-    // If not JSON, treat as plain text or other format
     console.log('Body is not JSON, treating as plain text');
-    // For non-JSON bodies, we can't extract nested fields, so return the whole body
     return bodyContent;
   }
 }

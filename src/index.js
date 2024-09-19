@@ -3,7 +3,6 @@ import { ConfigStorage } from './config-storage.js';
 import { serveRateLimitPage, serveRateLimitInfoPage } from './staticpages.js';
 import { evaluateConditions } from './condition-evaluator.js';
 
-// Cache configuration
 let cachedConfig = null;
 let lastConfigFetch = 0;
 const CONFIG_CACHE_TTL = 60 * 1000; // 1 minute
@@ -14,22 +13,41 @@ async function getConfig(env) {
     return cachedConfig;
   }
 
-  const configStorageId = env.CONFIG_STORAGE.idFromName('global');
-  const configStorage = env.CONFIG_STORAGE.get(configStorageId);
-  const configResponse = await configStorage.fetch(new Request('https://rate-limiter-ui/config'));
-  cachedConfig = await configResponse.json();
-  lastConfigFetch = now;
+  try {
+    const configStorageId = env.CONFIG_STORAGE.idFromName('global');
+    const configStorage = env.CONFIG_STORAGE.get(configStorageId);
+    const configResponse = await configStorage.fetch(new Request('https://dummy-url/config'));
 
-  if (!cachedConfig.version || cachedConfig.version !== '1.0') {
-    console.warn('Unsupported config version:', cachedConfig.version);
+    if (!configResponse.ok) {
+      throw new Error(
+        `Failed to fetch config: ${configResponse.status} ${configResponse.statusText}`
+      );
+    }
+
+    const rules = await configResponse.json();
+    console.log('Fetched config:', JSON.stringify(rules, null, 2));
+
+    if (!Array.isArray(rules) || rules.length === 0) {
+      console.warn('Config is empty or invalid');
+      return null;
+    }
+
+    cachedConfig = { rules }; // Wrap the array in an object with a 'rules' property
+    lastConfigFetch = now;
+    return cachedConfig;
+  } catch (error) {
+    console.error('Error fetching config:', error);
+    return null;
   }
-
-  return cachedConfig;
 }
 
-async function findMatchingRule(request, rules) {
+async function findMatchingRule(request, config) {
   console.log('Finding matching rule for request:', request.url);
-  for (const rule of rules) {
+  if (!config || !Array.isArray(config.rules)) {
+    console.warn('Invalid config structure');
+    return null;
+  }
+  for (const rule of config.rules) {
     console.log('Evaluating rule:', rule.name);
 
     const matches = await evaluateConditions(
@@ -165,12 +183,12 @@ export default {
     try {
       const config = await getConfig(env);
 
-      if (!config?.rules?.length) {
+      if (!config || !config.rules || config.rules.length === 0) {
         console.log('No rate limiting rules configured, passing through request');
         return fetch(request);
       }
 
-      const matchingRule = await findMatchingRule(request, config.rules);
+      const matchingRule = await findMatchingRule(request, config);
 
       if (!matchingRule) {
         console.log('Request does not match any criteria, passing through to origin');
@@ -179,7 +197,7 @@ export default {
 
       console.log('Request matches criteria for rule:', matchingRule.name);
 
-      const actionType = matchingRule.action?.type || 'rateLimit';
+      const actionType = matchingRule.initialMatch.action?.type || 'rateLimit';
       console.log('Action type:', actionType);
 
       if (url.pathname === env.RATE_LIMIT_INFO_PATH) {

@@ -1,6 +1,5 @@
-const BODY_SIZE_LIMIT = 524288;
+const BODY_SIZE_LIMIT = 524288; // 512 KB in bytes
 
-// CIDR matching function
 function isIPInCIDR(ip, cidr) {
   const [range, bits = 32] = cidr.split('/');
   const mask = ~(2 ** (32 - bits) - 1);
@@ -9,7 +8,16 @@ function isIPInCIDR(ip, cidr) {
   return (ipInt & mask) === (rangeInt & mask);
 }
 
+function getNestedValue(obj, path) {
+  return path.split('.').reduce((current, part) => current && current[part], obj);
+}
+
 const fieldFunctions = {
+  clientIP: (request) =>
+    request.headers.get('true-client-ip') ||
+    request.headers.get('cf-connecting-ip') ||
+    request.headers.get('x-forwarded-for')?.split(',')[0].trim() ||
+    request.cf?.clientIp,
   method: (request) => request.method,
   url: (request) => request.url,
   body: async (request) => {
@@ -41,54 +49,31 @@ const fieldFunctions = {
       return '';
     }
   },
-  headers: (request, headerName) => {
-    if (headerName) {
-      return request.headers.get(headerName);
-    }
-    return JSON.stringify(Object.fromEntries(request.headers));
-  },
-  cf: (request, cfProperty) => {
-    if (cfProperty) {
-      const value = request.cf[cfProperty];
-      return typeof value === 'object' ? JSON.stringify(value) : value?.toString();
-    }
-    return JSON.stringify(request.cf);
-  },
-  clientIP: (request) => {
-    return (
-      request.headers.get('true-client-ip') ||
-      request.headers.get('cf-connecting-ip') ||
-      request.headers.get('x-forwarded-for')?.split(',')[0].trim() ||
-      request.cf.clientIp
-    );
-  },
+  headers: (request, headerName) => request.headers.get(headerName),
+  cf: (request, cfProperty) => getNestedValue(request.cf, cfProperty),
 };
 
 const operatorFunctions = {
-  eq: (a, b) => a === b,
+  eq: (a, b, field) => {
+    if (field === 'clientIP') {
+      return b.includes('/') ? isIPInCIDR(a, b) : a === b;
+    }
+    return a === b;
+  },
   ne: (a, b) => a !== b,
   gt: (a, b) => parseFloat(a) > parseFloat(b),
   ge: (a, b) => parseFloat(a) >= parseFloat(b),
   lt: (a, b) => parseFloat(a) < parseFloat(b),
   le: (a, b) => parseFloat(a) <= parseFloat(b),
   contains: (a, b) => String(a).includes(b),
-  notContains: (a, b) => !String(a).includes(b),
-  startsWith: (a, b) => String(a).startsWith(b),
-  endsWith: (a, b) => String(a).endsWith(b),
-  regex: (a, b) => {
+  not_contains: (a, b) => !String(a).includes(b),
+  starts_with: (a, b) => String(a).startsWith(b),
+  ends_with: (a, b) => String(a).endsWith(b),
+  matches: (a, b) => {
     try {
-      const regex = new RegExp(b);
-      return regex.test(String(a));
+      return new RegExp(b).test(String(a));
     } catch (error) {
       console.error('Invalid regex:', b, error);
-      return false;
-    }
-  },
-  inCIDR: (ip, cidr) => {
-    try {
-      return isIPInCIDR(ip, cidr);
-    } catch (error) {
-      console.error('Invalid CIDR or IP:', cidr, ip, error);
       return false;
     }
   },
@@ -103,34 +88,46 @@ export async function evaluateConditions(request, conditions, logic = 'and') {
     return false;
   }
 
-  const results = await Promise.all(
-    conditions.map(async (condition) => {
-      if (condition.type === 'group') {
-        return evaluateConditions(request, condition.conditions, condition.logic);
-      } else if (condition.type === 'operator') {
-        return condition.logic === 'or';
-      } else {
-        return evaluateCondition(request, condition);
-      }
-    })
-  );
+  let result = logic === 'and';
+  for (const condition of conditions) {
+    if (condition.type === 'group') {
+      const groupResult = await evaluateConditions(request, condition.conditions, condition.logic);
+      result = logic === 'and' ? result && groupResult : result || groupResult;
+    } else if (condition.type === 'operator') {
+      // Skip operator conditions, as they're handled implicitly
+      continue;
+    } else {
+      const conditionResult = await evaluateCondition(request, condition);
+      result = logic === 'and' ? result && conditionResult : result || conditionResult;
+    }
 
-  if (logic === 'or') {
-    return results.some((result) => result);
-  } else {
-    return results.every((result) => result);
+    // Short-circuit evaluation
+    if (logic === 'and' && !result) break;
+    if (logic === 'or' && result) break;
   }
+
+  console.log(`Rule matches: ${result}`);
+  return result;
 }
 
 async function evaluateCondition(request, condition) {
   const { field, operator, value } = condition;
-  let fieldFunction;
   let fieldValue;
 
-  const [fieldType, fieldName] = field.split('.');
+  console.log(`Evaluating condition: ${field} ${operator} ${value}`);
 
-  if (fieldFunctions[fieldType]) {
-    fieldFunction = (req) => fieldFunctions[fieldType](req, fieldName);
+  if (field.startsWith('url.')) {
+    const url = new URL(request.url);
+    fieldValue = getNestedValue(url, field.slice(4));
+  } else if (field.startsWith('headers.')) {
+    fieldValue = request.headers.get(field.slice(8));
+  } else if (field.startsWith('cf.')) {
+    fieldValue = getNestedValue(request.cf, field.slice(3));
+  } else if (field.startsWith('body.')) {
+    const bodyContent = await fieldFunctions.body(request);
+    fieldValue = getNestedValue(JSON.parse(bodyContent), field.slice(5));
+  } else if (fieldFunctions[field]) {
+    fieldValue = await fieldFunctions[field](request);
   } else {
     console.warn(`Invalid field: ${field}`);
     return false;
@@ -141,12 +138,9 @@ async function evaluateCondition(request, condition) {
     return false;
   }
 
-  fieldValue = await fieldFunction(request);
-
-  console.log(`Evaluating condition: ${field} ${operator} ${value}`);
   console.log(`Field value: ${fieldValue}`);
 
-  const result = operatorFunctions[operator](fieldValue, value);
+  const result = operatorFunctions[operator](fieldValue, value, field);
   console.log(`Condition result: ${result}`);
 
   return result;

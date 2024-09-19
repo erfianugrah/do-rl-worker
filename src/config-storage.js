@@ -38,8 +38,8 @@ export class ConfigStorage {
   }
 
   async handlePost(request) {
-    const config = await request.json();
-    return this.saveConfig(config);
+    const rule = await request.json();
+    return this.addRule(rule);
   }
 
   async handlePut(request, path) {
@@ -70,13 +70,13 @@ export class ConfigStorage {
 
   async getConfig() {
     try {
-      const config = await this.state.storage.get('config');
-      return new Response(config || '{"version":"1.0","rules":[]}', {
+      const rules = (await this.state.storage.get('rules')) || '[]';
+      return new Response(rules, {
         headers: { 'Content-Type': 'application/json' },
       });
     } catch (error) {
-      console.error('ConfigStorage: Error retrieving config:', error);
-      return new Response(JSON.stringify({ error: 'Failed to retrieve configuration' }), {
+      console.error('ConfigStorage: Error retrieving rules:', error);
+      return new Response(JSON.stringify({ error: 'Failed to retrieve rules' }), {
         status: 500,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -85,10 +85,8 @@ export class ConfigStorage {
 
   async getRule(ruleId) {
     try {
-      const config = JSON.parse(
-        (await this.state.storage.get('config')) || '{"version":"1.0","rules":[]}'
-      );
-      const rule = config.rules.find((r) => r.id === ruleId);
+      const rules = JSON.parse((await this.state.storage.get('rules')) || '[]');
+      const rule = rules.find((r) => r.id === ruleId);
       if (rule) {
         return new Response(JSON.stringify(rule), {
           headers: { 'Content-Type': 'application/json' },
@@ -107,31 +105,18 @@ export class ConfigStorage {
     }
   }
 
-  async saveConfig(config) {
+  async addRule(newRule) {
     try {
-      config.version = '1.0';
-      if (config.rules) {
-        config.rules.forEach((rule) => {
-          if (rule.rateLimit) {
-            rule.rateLimit.limit = Number(rule.rateLimit.limit);
-            rule.rateLimit.period = Number(rule.rateLimit.period);
-          }
-          if (rule.action && rule.action.type === 'customResponse') {
-            rule.action.statusCode = Number(rule.action.statusCode);
-          }
-        });
-      }
-
-      const stringifiedConfig = JSON.stringify(config);
-      await this.state.storage.put('config', stringifiedConfig);
-
-      return new Response(JSON.stringify({ message: 'Config saved', config }), {
+      const rules = JSON.parse((await this.state.storage.get('rules')) || '[]');
+      rules.push(newRule);
+      await this.state.storage.put('rules', JSON.stringify(rules));
+      return new Response(JSON.stringify({ message: 'Rule added', rule: newRule }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });
     } catch (error) {
-      console.error('ConfigStorage: Error saving config:', error);
-      return new Response(JSON.stringify({ error: 'Failed to save configuration' }), {
+      console.error('ConfigStorage: Error adding rule:', error);
+      return new Response(JSON.stringify({ error: 'Failed to add rule' }), {
         status: 500,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -140,13 +125,11 @@ export class ConfigStorage {
 
   async updateRule(ruleId, updatedRule) {
     try {
-      const config = JSON.parse(
-        (await this.state.storage.get('config')) || '{"version":"1.0","rules":[]}'
-      );
-      const index = config.rules.findIndex((r) => r.id === ruleId);
+      const rules = JSON.parse((await this.state.storage.get('rules')) || '[]');
+      const index = rules.findIndex((r) => r.id === ruleId);
       if (index !== -1) {
-        config.rules[index] = updatedRule;
-        await this.saveConfig(config);
+        rules[index] = updatedRule;
+        await this.state.storage.put('rules', JSON.stringify(rules));
         return new Response(JSON.stringify({ message: 'Rule updated', rule: updatedRule }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -167,13 +150,11 @@ export class ConfigStorage {
 
   async deleteRule(ruleId) {
     try {
-      const config = JSON.parse(
-        (await this.state.storage.get('config')) || '{"version":"1.0","rules":[]}'
-      );
-      const index = config.rules.findIndex((r) => r.id === ruleId);
+      const rules = JSON.parse((await this.state.storage.get('rules')) || '[]');
+      const index = rules.findIndex((r) => r.id === ruleId);
       if (index !== -1) {
-        config.rules.splice(index, 1);
-        await this.saveConfig(config);
+        rules.splice(index, 1);
+        await this.state.storage.put('rules', JSON.stringify(rules));
         return new Response(JSON.stringify({ message: 'Rule deleted' }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -194,11 +175,7 @@ export class ConfigStorage {
 
   async reorderRules(updatedRules) {
     try {
-      const config = JSON.parse(
-        (await this.state.storage.get('config')) || '{"version":"1.0","rules":[]}'
-      );
-      config.rules = updatedRules;
-      await this.saveConfig(config);
+      await this.state.storage.put('rules', JSON.stringify(updatedRules));
       return new Response(JSON.stringify({ message: 'Rules reordered', rules: updatedRules }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },

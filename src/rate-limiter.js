@@ -27,42 +27,53 @@ export class RateLimiter {
 
       const clientIdentifier = await this.getClientIdentifier(request, rule, cf);
 
-      const matches = await evaluateConditions(
+      // Evaluate initial match
+      const initialMatches = await evaluateConditions(
         request,
         rule.initialMatch.conditions,
-        rule.initialMatch.logic
+        rule.initialMatch.logic || 'and'
       );
-      if (!matches) {
-        console.log('Request does not match initial conditions, allowing');
+
+      if (initialMatches) {
+        console.log('Initial match conditions met, applying rate limit');
+        const { isAllowed, remaining, resetTime } = await this.checkRateLimit(
+          clientIdentifier,
+          rule,
+          now
+        );
+        return this.createResponse(
+          isAllowed,
+          rule,
+          remaining,
+          resetTime,
+          Math.max(0, (resetTime - now) / 1000),
+          clientIdentifier,
+          rule.initialMatch.action
+        );
+      }
+
+      // Else action
+      if (rule.elseAction) {
         return this.createResponse(
           true,
           rule,
           rule.rateLimit.limit,
           now + rule.rateLimit.period * 1000,
           0,
-          clientIdentifier
+          clientIdentifier,
+          rule.elseAction
         );
       }
 
-      const { isAllowed, remaining, resetTime } = await this.checkRateLimit(
-        clientIdentifier,
-        rule,
-        now
-      );
-
-      console.log(
-        `RateLimiter: Request ${isAllowed ? 'allowed' : 'denied'} for ${clientIdentifier}`
-      );
-
-      const retryAfter = Math.max(0, (resetTime - now) / 1000);
-
+      // If no conditions match and no else action, allow the request
       return this.createResponse(
-        isAllowed,
+        true,
         rule,
-        remaining,
-        resetTime,
-        retryAfter,
-        clientIdentifier
+        rule.rateLimit.limit,
+        now + rule.rateLimit.period * 1000,
+        0,
+        clientIdentifier,
+        { type: 'allow' }
       );
     } catch (error) {
       console.error('RateLimiter: Unexpected error:', error);
@@ -106,7 +117,12 @@ export class RateLimiter {
   parseRule(request) {
     try {
       const rule = JSON.parse(request.headers.get('X-Rate-Limit-Config'));
-      if (rule?.name && rule.rateLimit?.limit && rule.rateLimit?.period && rule.action?.type) {
+      if (
+        rule?.name &&
+        rule.rateLimit?.limit &&
+        rule.rateLimit?.period &&
+        rule.initialMatch?.action?.type
+      ) {
         console.log('RateLimiter: Parsed rule:', JSON.stringify(rule, null, 2));
         return rule;
       }
@@ -120,14 +136,50 @@ export class RateLimiter {
 
   async getClientIdentifier(request, rule, cfData) {
     if (rule.fingerprint?.parameters) {
-      const fingerprint = await generateFingerprint(request, this.env, rule.fingerprint, cfData);
-      return `rate_limit:${rule.name}:fingerprint:${fingerprint}`;
+      const fingerprintComponents = [];
+      for (const param of rule.fingerprint.parameters) {
+        let value;
+        if (param.name.startsWith('headers.')) {
+          const headerName = param.name.slice(8);
+          value = request.headers.get(headerName);
+        } else if (param.name.startsWith('url.')) {
+          const url = new URL(request.url);
+          value = url[param.name.slice(4)];
+        } else if (param.name.startsWith('cf.')) {
+          value = this.getNestedValue(cfData, param.name.slice(3));
+        } else if (param.name === 'clientIP') {
+          value = this.getClientIP(request, cfData);
+        } else if (param.name === 'method') {
+          value = request.method;
+        } else if (param.name === 'url') {
+          value = request.url;
+        } else if (param.name === 'body' || param.name.startsWith('body.')) {
+          // Implement body extraction logic here
+          console.warn('Body fingerprinting not implemented');
+          continue;
+        } else {
+          console.warn(`Unsupported fingerprint parameter: ${param.name}`);
+          continue;
+        }
+
+        if (value) {
+          fingerprintComponents.push(`${param.name}:${value}`);
+        }
+      }
+      if (fingerprintComponents.length > 0) {
+        const fingerprint = await generateFingerprint(
+          request,
+          this.env,
+          { parameters: fingerprintComponents },
+          cfData
+        );
+        return `rate_limit:${rule.name}:fingerprint:${fingerprint}`;
+      }
     }
-    const clientIp = cfData.clientIp || request.headers.get('CF-Connecting-IP') || 'unknown';
-    return `rate_limit:${rule.name}:ip:${clientIp}`;
+    return `rate_limit:${rule.name}:ip:${this.getClientIP(request, cfData)}`;
   }
 
-  createResponse(isAllowed, rule, remaining, resetTime, retryAfter, clientIdentifier) {
+  createResponse(isAllowed, rule, remaining, resetTime, retryAfter, clientIdentifier, action) {
     const headers = new Headers({
       'Content-Type': 'application/json',
       'X-Rate-Limit-Limit': rule.rateLimit.limit.toString(),
@@ -145,7 +197,7 @@ export class RateLimiter {
       reset: Math.floor(resetTime / 1000),
       resetFormatted: new Date(resetTime).toUTCString(),
       period: rule.rateLimit.period,
-      action: rule.action,
+      action: action,
       clientIdentifier,
     };
 
@@ -157,8 +209,13 @@ export class RateLimiter {
     console.log('Response headers:', Object.fromEntries(headers));
     console.log('Response body:', responseBody);
 
+    let status = isAllowed ? 200 : 429;
+    if (action.type === 'customResponse') {
+      status = action.statusCode || status;
+    }
+
     return new Response(JSON.stringify(responseBody), {
-      status: isAllowed ? 200 : 429,
+      status: status,
       headers,
     });
   }
@@ -197,5 +254,19 @@ export class RateLimiter {
       console.error('RateLimiter: Unexpected error in getRateLimitInfo:', error);
       return this.errorResponse('Unexpected error', 500);
     }
+  }
+
+  getClientIP(request, cfData) {
+    return (
+      request.headers.get('true-client-ip') ||
+      request.headers.get('cf-connecting-ip') ||
+      request.headers.get('x-forwarded-for')?.split(',')[0].trim() ||
+      cfData.clientIp ||
+      'unknown'
+    );
+  }
+
+  getNestedValue(obj, path) {
+    return path.split('.').reduce((current, part) => current && current[part], obj);
   }
 }
