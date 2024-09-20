@@ -16,7 +16,9 @@ async function getConfig(env) {
   try {
     const configStorageId = env.CONFIG_STORAGE.idFromName('global');
     const configStorage = env.CONFIG_STORAGE.get(configStorageId);
-    const configResponse = await configStorage.fetch(new Request('https://dummy-url/config'));
+    const configResponse = await configStorage.fetch(
+      new Request('https://rate-limiter-configurator/config')
+    );
 
     if (!configResponse.ok) {
       throw new Error(
@@ -24,15 +26,15 @@ async function getConfig(env) {
       );
     }
 
-    const rules = await configResponse.json();
-    console.log('Fetched config:', JSON.stringify(rules, null, 2));
+    const config = await configResponse.json();
+    console.log('Fetched config:', JSON.stringify(config, null, 2));
 
-    if (!Array.isArray(rules) || rules.length === 0) {
+    if (!config || !Array.isArray(config.rules) || config.rules.length === 0) {
       console.warn('Config is empty or invalid');
       return null;
     }
 
-    cachedConfig = { rules }; // Wrap the array in an object with a 'rules' property
+    cachedConfig = config;
     lastConfigFetch = now;
     return cachedConfig;
   } catch (error) {
