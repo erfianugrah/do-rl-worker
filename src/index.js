@@ -93,7 +93,7 @@ async function handleRateLimit(request, env, matchingRule) {
 
   const rateLimiterRequest = new Request(request.url, {
     method: 'POST',
-    headers,
+    headers: headers,
     body: JSON.stringify(payload),
   });
 

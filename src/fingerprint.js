@@ -34,19 +34,50 @@ async function getRequestBody(request) {
   }
 }
 
-function getNestedValue(obj, path) {
-  return path.split('.').reduce((current, part) => current && current[part], obj);
-}
+const getNestedValue = (obj, path) =>
+  path.split('.').reduce((current, part) => current && current[part], obj);
 
-function getClientIP(request, cfData) {
-  return (
-    request.headers.get('true-client-ip') ||
-    request.headers.get('cf-connecting-ip') ||
-    request.headers.get('x-forwarded-for')?.split(',')[0].trim() ||
-    cfData.clientIp ||
-    'unknown'
-  );
-}
+const getClientIP = (request, cfData) => {
+  const ipSources = [
+    () => request.headers.get('true-client-ip'),
+    () => request.headers.get('cf-connecting-ip'),
+    () => request.headers.get('x-forwarded-for')?.split(',')[0].trim(),
+    () => cfData.clientIp,
+  ];
+
+  return ipSources.reduce((ip, source) => ip || source(), 'unknown');
+};
+
+const extractHeaderNameValue = (request, param) =>
+  param.headerName &&
+  param.headerValue &&
+  request.headers.get(param.headerName) === param.headerValue
+    ? `${param.headerName}:${param.headerValue}`
+    : null;
+
+const extractBodyField = (bodyContent, fieldPath) => {
+  try {
+    const jsonBody = JSON.parse(bodyContent);
+    return getNestedValue(jsonBody, fieldPath) || '';
+  } catch (error) {
+    console.log('Body is not JSON, treating as plain text');
+    return bodyContent;
+  }
+};
+
+const parameterExtractors = {
+  'headers.nameValue': (request, param) => extractHeaderNameValue(request, param),
+  headers: (request, param) => request.headers.get(param.name.slice(8)),
+  url: (request, param) => getNestedValue(new URL(request.url), param.name.slice(4)),
+  queryParam: (request, param) => new URL(request.url).searchParams.get(param.queryParamName) || '',
+  cf: (request, param, cfData) => getNestedValue(cfData, param.name.slice(3)),
+  clientIP: (request, param, cfData) => getClientIP(request, cfData),
+  method: (request) => request.method,
+  body: async (request, param) => {
+    const bodyContent = await getRequestBody(request);
+    return param.name === 'body' ? bodyContent : extractBodyField(bodyContent, param.name.slice(5));
+  },
+};
 
 export async function generateFingerprint(request, env, fingerprintConfig, cfData) {
   console.log('Generating fingerprint with config:', JSON.stringify(fingerprintConfig, null, 2));
@@ -57,29 +88,21 @@ export async function generateFingerprint(request, env, fingerprintConfig, cfDat
 
   const components = await Promise.all(
     parameters.map(async (param) => {
-      let value;
-      if (param.startsWith('headers.')) {
-        value = request.headers.get(param.slice(8));
-      } else if (param.startsWith('url.')) {
-        const url = new URL(request.url);
-        value = getNestedValue(url, param.slice(4));
-      } else if (param.startsWith('cf.')) {
-        value = getNestedValue(cfData, param.slice(3));
-      } else if (param === 'clientIP') {
-        value = getClientIP(request, cfData);
-      } else if (param === 'method') {
-        value = request.method;
-      } else if (param === 'url') {
-        value = request.url;
-      } else if (param === 'body' || param.startsWith('body.')) {
-        const bodyContent = await getRequestBody(request);
-        value = param === 'body' ? bodyContent : extractBodyField(bodyContent, param.slice(5));
-      } else {
-        console.warn(`Unsupported fingerprint parameter: ${param}`);
+      const extractorKey = Object.keys(parameterExtractors).find((key) =>
+        param.name.startsWith(key)
+      );
+      const extractor = parameterExtractors[extractorKey];
+
+      if (!extractor) {
+        console.warn(`Unsupported fingerprint parameter: ${param.name}`);
         return '';
       }
 
-      console.log(`Fingerprint parameter ${param}:`, value !== undefined ? value : '(undefined)');
+      const value = await extractor(request, param, cfData);
+      console.log(
+        `Fingerprint parameter ${param.name}:`,
+        value !== undefined ? value : '(undefined)'
+      );
       return value !== undefined && value !== null ? value.toString() : '';
     })
   );
@@ -91,14 +114,4 @@ export async function generateFingerprint(request, env, fingerprintConfig, cfDat
   const fingerprint = await hashValue(components.join('|'));
   console.log('Generated fingerprint:', fingerprint);
   return fingerprint;
-}
-
-function extractBodyField(bodyContent, fieldPath) {
-  try {
-    const jsonBody = JSON.parse(bodyContent);
-    return getNestedValue(jsonBody, fieldPath) || '';
-  } catch (error) {
-    console.log('Body is not JSON, treating as plain text');
-    return bodyContent;
-  }
 }
