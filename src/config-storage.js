@@ -108,8 +108,14 @@ export class ConfigStorage {
     console.log(`ConfigStorage: Handling PUT request for path: ${path}`);
     if (path === '/config/reorder') {
       console.log('ConfigStorage: Reordering rules');
-      const updatedRules = await request.json();
-      return this.reorderRules(updatedRules);
+      const { rules } = await request.json();
+      if (!Array.isArray(rules)) {
+        return new Response(JSON.stringify({ error: 'Invalid input: rules must be an array' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return this.reorderRules(rules);
     } else if (path.startsWith('/rules/')) {
       const ruleId = path.split('/')[2];
       console.log(`ConfigStorage: Updating rule with ID: ${ruleId}`);
@@ -271,12 +277,12 @@ export class ConfigStorage {
 
   async reorderRules(updatedRules) {
     try {
-      console.log('ConfigStorage: Reordering rules');
+      console.log('ConfigStorage: Reordering rules, received:', JSON.stringify(updatedRules));
       if (!Array.isArray(updatedRules)) {
         throw new Error('Invalid input: updatedRules must be an array');
       }
       await this.state.storage.put('rules', JSON.stringify(updatedRules));
-      console.log('Rules after reordering:', updatedRules);
+      console.log('Rules after reordering:', JSON.stringify(updatedRules));
       return new Response(JSON.stringify({ message: 'Rules reordered', rules: updatedRules }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
