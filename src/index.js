@@ -43,6 +43,18 @@ async function getConfig(env) {
   }
 }
 
+function isValidRuleStructure(rule) {
+  if (!rule.initialMatch) {
+    console.warn(`Rule ${rule.name} is missing initialMatch`);
+    return false;
+  }
+  if (rule.elseIfActions && rule.elseIfActions.length > 0 && !rule.elseAction) {
+    console.warn(`Rule ${rule.name} has elseIfActions but no elseAction`);
+    return false;
+  }
+  return true;
+}
+
 async function findMatchingRule(request, config) {
   console.log('Finding matching rule for request:', request.url);
   if (!config || !Array.isArray(config.rules)) {
@@ -52,13 +64,46 @@ async function findMatchingRule(request, config) {
   for (const rule of config.rules) {
     console.log('Evaluating rule:', rule.name);
 
-    const matches = await evaluateConditions(
+    if (!isValidRuleStructure(rule)) {
+      continue;
+    }
+
+    // Check initial match
+    const initialMatches = await evaluateConditions(
       request,
       rule.initialMatch.conditions,
-      rule.initialMatch.logic
+      rule.initialMatch.logic || 'and'
     );
-    console.log(`Rule ${rule.name} matches: ${matches}`);
-    if (matches) return rule;
+    console.log(`Initial match for rule ${rule.name}: ${initialMatches}`);
+
+    if (initialMatches) {
+      console.log(`Rule ${rule.name} initial match conditions met`);
+      return { ...rule, actionType: rule.initialMatch.action.type };
+    }
+
+    // Check elseIf conditions if they exist
+    if (rule.elseIfActions && rule.elseIfActions.length > 0) {
+      for (const elseIfAction of rule.elseIfActions) {
+        const elseIfMatches = await evaluateConditions(
+          request,
+          elseIfAction.conditions,
+          elseIfAction.logic || 'and'
+        );
+        console.log(`Else-if match for rule ${rule.name}: ${elseIfMatches}`);
+        if (elseIfMatches) {
+          console.log(`Rule ${rule.name} else-if conditions met`);
+          return { ...rule, actionType: elseIfAction.action.type };
+        }
+      }
+    }
+
+    // Apply else action if it exists
+    if (rule.elseAction) {
+      console.log(`Rule ${rule.name} else condition applied`);
+      return { ...rule, actionType: rule.elseAction.type };
+    }
+
+    console.log(`Rule ${rule.name} did not match`);
   }
   return null;
 }

@@ -79,6 +79,8 @@ const operatorFunctions = {
   },
 };
 
+// condition-evaluator.js
+
 export async function evaluateConditions(request, conditions, logic = 'and') {
   console.log(`Evaluating conditions with logic: ${logic}`);
   console.log(`Conditions:`, JSON.stringify(conditions, null, 2));
@@ -89,24 +91,34 @@ export async function evaluateConditions(request, conditions, logic = 'and') {
   }
 
   let result = logic === 'and';
-  for (const condition of conditions) {
-    if (condition.type === 'group') {
-      const groupResult = await evaluateConditions(request, condition.conditions, condition.logic);
-      result = logic === 'and' ? result && groupResult : result || groupResult;
-    } else if (condition.type === 'operator') {
-      // Skip operator conditions, as they're handled implicitly
+  for (let i = 0; i < conditions.length; i++) {
+    const condition = conditions[i];
+    if (condition.type === 'operator') {
+      console.log(`Switching logic to: ${condition.logic}`);
+      logic = condition.logic;
       continue;
-    } else {
-      const conditionResult = await evaluateCondition(request, condition);
-      result = logic === 'and' ? result && conditionResult : result || conditionResult;
     }
 
-    // Short-circuit evaluation
-    if (logic === 'and' && !result) break;
-    if (logic === 'or' && result) break;
+    let conditionResult;
+    if ('conditions' in condition) {
+      console.log('Evaluating nested condition group:');
+      conditionResult = await evaluateConditions(request, condition.conditions, 'and');
+    } else {
+      conditionResult = await evaluateCondition(request, condition);
+    }
+
+    if (logic === 'and') {
+      result = result && conditionResult;
+      console.log(`AND result so far: ${result}`);
+      if (!result) break; // Short-circuit for AND
+    } else {
+      result = result || conditionResult;
+      console.log(`OR result so far: ${result}`);
+      if (result) break; // Short-circuit for OR
+    }
   }
 
-  console.log(`Rule matches: ${result}`);
+  console.log(`Final result for this condition group: ${result}`);
   return result;
 }
 
