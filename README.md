@@ -2,94 +2,127 @@
 
 ## Overview
 
-The Rate Limiting Worker is a Cloudflare Worker that implements a flexible and configurable rate limiting system. It processes incoming requests, applies rate limiting rules, and takes appropriate actions when limits are exceeded.
+The Rate Limiting Worker is a Cloudflare Worker designed to implement rate limiting based on configurable rules. It works in conjunction with the Rate Limit Configurator UI, fetching rules from a shared Durable Object and applying them to incoming requests.
 
-## Features
+## Project Structure
 
-- Applies complex rate limiting rules to incoming requests
-- Supports various methods of client identification (IP, custom headers, etc.)
-- Implements configurable actions for rate limit violations
-- Provides real-time rate limit information
-- Integrates with Cloudflare's edge network for optimal performance
+```
+do-rl-worker/
+├── src/
+│   ├── config-storage.js
+│   ├── condition-evaluator.js
+│   ├── fingerprint.js
+│   ├── index.js
+│   ├── rate-limiter.js
+│   ├── staticpages.js
+│   └── utils.js
+├── package.json
+└── wrangler.toml
+```
 
-## Architecture
+## Key Components
 
-The Rate Limiting Worker is built using JavaScript and runs on Cloudflare's edge network. It uses Cloudflare's Durable Objects for both distributed state management and configuration storage, ensuring consistency and high performance across the global network.
+1. **index.js**: The main entry point for the worker. It handles incoming requests, fetches the configuration, finds matching rules, and applies rate limiting.
 
-### Key Components
+2. **config-storage.js**: Defines the `ConfigStorage` class, a Durable Object responsible for storing and managing rate limiting rules.
 
-1. **Main Worker (index.js)**: Handles incoming requests and orchestrates the rate limiting process.
-2. **Rate Limiter (rate-limiter.js)**: Implements core rate limiting logic.
-3. **Config Storage (config-storage.js)**: Manages retrieval and caching of rate limiting rules using Durable Objects.
-4. **Fingerprint Generator (fingerprint.js)**: Creates unique identifiers for requests.
-5. **Condition Evaluator (condition-evaluator.js)**: Evaluates complex matching conditions.
+3. **rate-limiter.js**: Contains the `RateLimiter` class, which implements the core rate limiting logic.
+
+4. **condition-evaluator.js**: Provides functions for evaluating conditions defined in the rate limiting rules.
+
+5. **fingerprint.js**: Handles the generation of unique identifiers for requests based on configured parameters.
+
+6. **staticpages.js**: Serves static HTML pages for rate limit notifications and information.
+
+7. **utils.js**: Contains utility functions for cryptographic operations.
 
 ## Workflow
 
-1. The Worker receives an incoming request.
-2. It fetches the current rate limiting configuration from the Config Storage Durable Object.
-3. The request is evaluated against the configured rules.
-4. If a matching rule is found:
-   - A fingerprint is generated for the request.
-   - The rate limit is checked for the fingerprint using the Rate Limiter Durable Object.
-   - If the limit is exceeded, the configured action is taken.
-   - If not, the request is allowed to proceed.
-5. Rate limit headers are added to the response.
+1. The worker receives an incoming request.
+2. It fetches the current configuration from the `ConfigStorage` Durable Object.
+3. The worker finds the first matching rule based on the request properties.
+4. If a matching rule is found, the worker applies the rate limiting logic using the `RateLimiter` Durable Object.
+5. Based on the rate limiting result and the rule's action, the worker either allows the request to proceed, blocks it, or applies a custom action.
+
+## Rate Limiting Logic
+
+The rate limiting is based on a sliding window algorithm. Each client is identified by a unique fingerprint generated from configurable request properties. The worker tracks the number of requests made by each client within the specified time window.
 
 ## Configuration
 
-The Worker uses a JSON configuration stored in a Durable Object that defines rate limiting rules. Each rule includes:
+The rate limiting rules are stored in and fetched from a `ConfigStorage` Durable Object. Each rule can specify:
 
-- Basic information (name, description)
+- Rate limit (requests per time period)
+- Fingerprint parameters
 - Matching conditions
-- Fingerprinting settings
-- Rate limit details (requests per time period)
-- Actions for when limits are exceeded
+- Actions to take when rate limit is exceeded
 
-## Integration with Rate Limiting UI
+## API Endpoints
 
-The Worker fetches its configuration from a Durable Object that is updated by the Rate Limiting UI. This allows for dynamic updates to rate limiting rules without redeploying the Worker.
+The worker handles the following special endpoints:
 
-## Performance Considerations
+- `/_ratelimit`: Returns information about the current rate limit status for the client.
+- `/config`: Proxies requests to the `ConfigStorage` Durable Object for rule management.
 
-- The Worker uses in-memory caching to minimize latency in fetching configurations.
-- Durable Objects ensure consistent rate limiting and configuration storage across Cloudflare's global network.
-- Efficient request evaluation and fingerprinting minimize processing time.
+## Durable Objects
 
-## Extending the Worker
+The worker uses two types of Durable Objects:
 
-The Worker is designed to be modular and extensible. Possible extensions include:
-- Support for more complex rate limiting algorithms
-- Integration with external data sources for dynamic rate limiting
-- Custom actions for rate limit violations
+1. **ConfigStorage**: Stores and manages the rate limiting rules.
+2. **RateLimiter**: Implements the rate limiting logic for each unique client identifier.
 
 ## Deployment
 
-1. Ensure Cloudflare Workers are set up for your domain.
-2. Configure the necessary Durable Objects for both rate limiting state and configuration storage.
-3. Deploy the Worker code to your Cloudflare account.
-4. Set up the required environment variables:
-   - `CONFIG_STORAGE`: Durable Object namespace for configuration storage
-   - `RATE_LIMITER`: Durable Object namespace for rate limiting state
-   - `RATE_LIMIT_INFO_PATH`: Path for accessing rate limit information
+To deploy the worker:
 
-## Monitoring and Troubleshooting
+1. Ensure you have the Wrangler CLI installed and authenticated with your Cloudflare account.
+2. Run `wrangler publish` in the project directory.
 
-- Use Cloudflare's Workers dashboard to monitor invocations and errors.
-- Enable debug logging for detailed information on rule evaluation and rate limiting decisions.
-- Check the Worker's logs for any configuration parsing errors or unexpected behaviors.
-- Monitor Durable Object usage and performance in the Cloudflare dashboard.
+## Configuration (wrangler.toml)
+
+The `wrangler.toml` file contains important configuration details:
+
+- Worker name and compatibility date
+- Route configuration
+- Durable Object bindings
+
+Ensure that the Durable Object bindings match those in the UI project for proper integration.
+
+## Development
+
+To run the worker locally for development:
+
+```
+wrangler dev
+```
+
+This command starts a local development server that simulates the Cloudflare Workers environment.
+
+## Testing
+
+Currently, the project does not have a formal testing setup. It's recommended to implement unit tests for critical components like the condition evaluator and rate limiting logic.
+
+## Error Handling and Logging
+
+The worker includes extensive logging throughout its execution. In production, these logs can be viewed in the Cloudflare dashboard. Errors are caught and logged, with the worker attempting to gracefully handle failures by passing through requests when errors occur.
 
 ## Security Considerations
 
-- The Worker never exposes sensitive configuration details in responses.
-- All communication with Durable Objects is internal to Cloudflare's network and encrypted.
-- The Worker implements safeguards against potential DoS vectors in the rate limiting logic.
-- Access to the configuration Durable Object is strictly controlled to prevent unauthorized modifications.
+- Ensure that the worker is deployed with appropriate access controls to prevent unauthorized manipulation of rate limiting rules.
+- The worker trusts headers like `true-client-ip` and `cf-connecting-ip` for client identification. Ensure these are set correctly in your Cloudflare configuration.
+- Consider implementing additional security measures such as API key validation for the configuration endpoints.
 
-## Durable Objects Usage
+## Integration with UI
 
-- **Config Storage**: A single Durable Object instance stores the entire rate limiting configuration. This ensures atomic updates and consistent reads across all Worker instances.
-- **Rate Limiter**: Multiple Durable Object instances are used to store rate limiting state, keyed by client identifiers. This allows for distributed yet consistent rate limiting across Cloudflare's global network.
+This worker is designed to work in tandem with the Rate Limit Configurator UI. The UI manages the rules stored in the `ConfigStorage` Durable Object, which this worker then fetches and applies.
 
-For more detailed information on the Rate Limiting Worker's internals and API, please refer to the technical documentation.
+## Limitations
+
+- The current implementation has a hard-coded body size limit for fingerprinting and condition evaluation.
+- The configuration is cached for 1 minute to reduce Durable Object reads. This means that rule changes may take up to 1 minute to propagate.
+
+## Future Improvements
+
+- Implement more sophisticated caching mechanisms for configuration and rate limit data.
+- Add support for more complex rate limiting scenarios, such as tiered limits or dynamic limits based on user behavior.
+- Enhance the fingerprinting capabilities to support more complex client identification schemes.
