@@ -38,6 +38,9 @@ const getNestedValue = (obj, path) =>
   path.split('.').reduce((current, part) => current && current[part], obj);
 
 const getClientIP = (request, cfData) => {
+  console.log('Debug: cfData:', JSON.stringify(cfData, null, 2));
+  console.log('Debug: All headers:', JSON.stringify(Object.fromEntries(request.headers)));
+
   const ipSources = [
     () => request.headers.get('true-client-ip'),
     () => request.headers.get('cf-connecting-ip'),
@@ -45,7 +48,16 @@ const getClientIP = (request, cfData) => {
     () => cfData.clientIp,
   ];
 
-  return ipSources.reduce((ip, source) => ip || source(), 'unknown');
+  for (const source of ipSources) {
+    const ip = source();
+    if (ip) {
+      console.log(`Debug: IP found: ${ip}`);
+      return ip;
+    }
+  }
+
+  console.warn('Unable to determine client IP from request or CF data');
+  return 'unknown';
 };
 
 const extractHeaderNameValue = (request, param) =>
