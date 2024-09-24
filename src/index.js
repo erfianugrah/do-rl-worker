@@ -61,6 +61,10 @@ async function findMatchingRule(request, config) {
     console.warn('Invalid config structure');
     return null;
   }
+
+  let lastLogOrSimulateAction = null;
+  let lastElseAction = null;
+
   for (const rule of config.rules) {
     console.log('Evaluating rule:', rule.name);
 
@@ -68,21 +72,23 @@ async function findMatchingRule(request, config) {
       continue;
     }
 
-    // Check initial match
     const initialMatches = await evaluateConditions(
       request,
       rule.initialMatch.conditions,
-      rule.initialMatch.logic || 'and'
+      'and' // Default to 'and' logic for initial match
     );
     console.log(`Initial match for rule ${rule.name}: ${initialMatches}`);
 
     if (initialMatches) {
-      console.log(`Rule ${rule.name} initial match conditions met`);
-      return { ...rule, actionType: rule.initialMatch.action.type };
-    }
-
-    // Check elseIf conditions if they exist
-    if (rule.elseIfActions && rule.elseIfActions.length > 0) {
+      const actionType = rule.initialMatch.action.type;
+      if (actionType === 'log' || actionType === 'simulate') {
+        lastLogOrSimulateAction = { ...rule, actionType, action: rule.initialMatch.action };
+        console.log(`Rule ${rule.name} matched with ${actionType} action, continuing evaluation`);
+      } else {
+        console.log(`Rule ${rule.name} matched with action: ${actionType}`);
+        return { ...rule, actionType, action: rule.initialMatch.action };
+      }
+    } else if (rule.elseIfActions && rule.elseIfActions.length > 0) {
       for (const elseIfAction of rule.elseIfActions) {
         const elseIfMatches = await evaluateConditions(
           request,
@@ -91,29 +97,35 @@ async function findMatchingRule(request, config) {
         );
         console.log(`Else-if match for rule ${rule.name}: ${elseIfMatches}`);
         if (elseIfMatches) {
-          console.log(`Rule ${rule.name} else-if conditions met`);
-          return { ...rule, actionType: elseIfAction.action.type };
+          const actionType = elseIfAction.action.type;
+          if (actionType === 'log' || actionType === 'simulate') {
+            lastLogOrSimulateAction = { ...rule, actionType, action: elseIfAction.action };
+            console.log(
+              `Rule ${rule.name} else-if matched with ${actionType} action, continuing evaluation`
+            );
+          } else {
+            console.log(`Rule ${rule.name} else-if matched with action: ${actionType}`);
+            return { ...rule, actionType, action: elseIfAction.action };
+          }
         }
       }
     }
 
-    // Apply else action if it exists
     if (rule.elseAction) {
-      console.log(`Rule ${rule.name} else condition applied`);
-      return { ...rule, actionType: rule.elseAction.type };
+      lastElseAction = { ...rule, actionType: rule.elseAction.type, action: rule.elseAction };
+      console.log(`Rule ${rule.name} else action stored as potential fallback`);
     }
 
-    console.log(`Rule ${rule.name} did not match`);
+    console.log(`Finished evaluating rule ${rule.name}`);
   }
-  return null;
-}
 
-async function evaluateRequestMatch(request, requestMatch) {
-  console.log('Evaluating request match:', JSON.stringify(requestMatch, null, 2));
+  // If we've reached here, no non-log/non-simulate actions were matched
+  if (lastElseAction) {
+    console.log(`Applying else action from rule: ${lastElseAction.name}`);
+    return lastElseAction;
+  }
 
-  if (!requestMatch || !requestMatch.conditions) return true;
-
-  return await evaluateConditions(request, requestMatch.conditions, requestMatch.logic);
+  return lastLogOrSimulateAction;
 }
 
 async function handleRateLimit(request, env, matchingRule) {
@@ -184,15 +196,37 @@ const actionHandlers = {
     console.log('Blocking request due to rate limit');
     return new Response('Forbidden', { status: 403 });
   },
-  customResponse: (matchingRule) => {
-    console.log('Applying custom response due to rate limit');
+  customResponse: (env, request, rateLimitInfo, matchingRule) => {
+    console.log('Applying custom response');
     return new Response(matchingRule.action.body, {
       status: parseInt(matchingRule.action.statusCode),
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type':
+          matchingRule.action.bodyType === 'json'
+            ? 'application/json'
+            : matchingRule.action.bodyType === 'html'
+              ? 'text/html'
+              : 'text/plain',
+      },
     });
   },
-  rateLimit: (env, request, rateLimitInfo) => {
-    console.log('Serving rate limit page');
+  rateLimit: (env, request, rateLimitInfo, matchingRule) => {
+    console.log('Applying rate limit action');
+    if (matchingRule.action && matchingRule.action.statusCode && matchingRule.action.body) {
+      // Use custom response if defined in the rule
+      return new Response(matchingRule.action.body, {
+        status: parseInt(matchingRule.action.statusCode),
+        headers: {
+          'Content-Type':
+            matchingRule.action.bodyType === 'json'
+              ? 'application/json'
+              : matchingRule.action.bodyType === 'html'
+                ? 'text/html'
+                : 'text/plain',
+        },
+      });
+    }
+    // Default rate limit behavior
     return request.headers.get('Accept')?.includes('text/html')
       ? serveRateLimitPage(env, request, rateLimitInfo)
       : new Response(
@@ -243,9 +277,7 @@ export default {
       }
 
       console.log('Request matches criteria for rule:', matchingRule.name);
-
-      const actionType = matchingRule.initialMatch.action?.type || 'rateLimit';
-      console.log('Action type:', actionType);
+      console.log('Action type:', matchingRule.actionType);
 
       if (url.pathname === env.RATE_LIMIT_INFO_PATH) {
         console.log('Serving rate limit info page');
@@ -264,13 +296,13 @@ export default {
         console.log('Rate limit not exceeded, forwarding request');
         response = await fetch(request);
 
-        if (actionType === 'simulate') {
+        if (matchingRule.actionType === 'simulate') {
           response = new Response(response.body, response);
           response.headers.set('X-Rate-Limit-Simulated', 'false');
         }
       } else {
-        console.log('Rate limit exceeded, applying action:', actionType);
-        response = await (actionHandlers[actionType] || actionHandlers.rateLimit)(
+        console.log('Rate limit exceeded, applying action:', matchingRule.actionType);
+        response = await actionHandlers[matchingRule.actionType](
           env,
           request,
           rateLimitInfo,
