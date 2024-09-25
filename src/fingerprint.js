@@ -42,6 +42,8 @@ const getClientIP = (request, cfData) => {
   console.log(
     "Debug: All headers:",
     JSON.stringify(Object.fromEntries(request.headers)),
+    null,
+    2,
   );
 
   const ipSources = [
@@ -63,39 +65,50 @@ const getClientIP = (request, cfData) => {
   return "unknown";
 };
 
-const extractHeaderNameValue = (request, param) =>
-  param.headerName &&
-    param.headerValue &&
-    request.headers.get(param.headerName) === param.headerValue
-    ? `${param.headerName}:${param.headerValue}`
-    : null;
-
-const extractBodyField = (bodyContent, fieldPath) => {
-  try {
-    const jsonBody = JSON.parse(bodyContent);
-    return getNestedValue(jsonBody, fieldPath) || "";
-  } catch (error) {
-    console.log("Body is not JSON, treating as plain text");
-    return bodyContent;
-  }
-};
+function parseCookies(cookieHeader) {
+  return cookieHeader.split(";").reduce((cookies, cookie) => {
+    const [name, value] = cookie.trim().split("=").map(decodeURIComponent);
+    cookies[name] = value;
+    return cookies;
+  }, {});
+}
 
 const parameterExtractors = {
   "headers.nameValue": (request, param) =>
-    extractHeaderNameValue(request, param),
-  headers: (request, param) => request.headers.get(param.name.slice(8)),
+    param.headerName && param.headerValue &&
+      request.headers.get(param.headerName) === param.headerValue
+      ? `${param.headerName}:${param.headerValue}`
+      : null,
+  "headers.name": (request, param) =>
+    param.headerName ? request.headers.get(param.headerName) : null,
+  "headers.cookieName": (request, param) => {
+    const cookies = parseCookies(request.headers.get("cookie") || "");
+    return param.cookieName ? cookies[param.cookieName] : null;
+  },
+  "headers.cookieNameValue": (request, param) => {
+    const cookies = parseCookies(request.headers.get("cookie") || "");
+    return param.cookieName && param.cookieValue &&
+        cookies[param.cookieName] === param.cookieValue
+      ? `${param.cookieName}=${param.cookieValue}`
+      : null;
+  },
   url: (request, param) =>
-    getNestedValue(new URL(request.url), param.name.slice(4)),
-  queryParam: (request, param) =>
-    new URL(request.url).searchParams.get(param.queryParamName) || "",
-  cf: (request, param, cfData) => getNestedValue(cfData, param.name.slice(3)),
+    param.name.startsWith("url.")
+      ? getNestedValue(new URL(request.url), param.name.slice(4))
+      : null,
+  cf: (request, param, cfData) =>
+    param.name.startsWith("cf.")
+      ? getNestedValue(cfData, param.name.slice(3))
+      : null,
   clientIP: (request, param, cfData) => getClientIP(request, cfData),
   method: (request) => request.method,
   body: async (request, param) => {
     const bodyContent = await getRequestBody(request);
     return param.name === "body"
       ? bodyContent
-      : extractBodyField(bodyContent, param.name.slice(5));
+      : param.name.startsWith("body.")
+      ? getNestedValue(JSON.parse(bodyContent), param.name.slice(5))
+      : null;
   },
 };
 
@@ -112,7 +125,7 @@ export async function generateFingerprint(
   console.log("Fingerprint: CF object:", JSON.stringify(cfData, null, 2));
 
   const timestamp = Math.floor(Date.now() / 1000);
-  const parameters = fingerprintConfig.parameters || ["clientIP"];
+  const parameters = fingerprintConfig.parameters || [];
 
   const components = await Promise.all(
     parameters.map(async (param) => {
