@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import argparse
 import requests
 import time
@@ -7,6 +9,7 @@ from datetime import datetime
 from colorama import Fore, Style, init
 import concurrent.futures
 import threading
+import sys
 
 # Initialize colorama
 init(autoreset=True)
@@ -26,7 +29,21 @@ def parse_arguments():
     parser.add_argument("-t", "--timeout", type=float, default=30, help="Request timeout in seconds")
     parser.add_argument("-L", "--follow-redirects", action="store_true", help="Follow redirects")
     parser.add_argument("-c", "--concurrency", type=int, default=10, help="Number of concurrent requests")
+    parser.add_argument("--help-tags", action="store_true", help="Display help for output tags")
     return parser.parse_args()
+
+def display_tag_help():
+    print(f"{Fore.YELLOW}Output Tag Help:{Style.RESET_ALL}")
+    print("| Tag      | Description                                      |")
+    print("|----------|--------------------------------------------------|")
+    print("| Request  | Request number                                   |")
+    print("| Status   | HTTP status code of the response                 |")
+    print("| Limit    | Rate limit (requests allowed in the time period) |")
+    print("| Remain   | Remaining requests allowed                       |")
+    print("| Reset    | Time when the rate limit resets                  |")
+    print("| Period   | Time period for the rate limit (in seconds)      |")
+    print("| Retry    | Time to wait before retrying (if rate limited)   |")
+    print("| Response | Response time in milliseconds                    |")
 
 def parse_headers(headers):
     limit = headers.get("X-Rate-Limit-Limit")
@@ -46,7 +63,7 @@ def format_date(timestamp):
 
 def display_table(request_num, status_code, limit, remaining, reset, period, retry_after, response_time):
     color = Fore.RED if status_code == 429 else Fore.GREEN
-    print(color + f"| {request_num:<8} | {status_code:<11} | {limit or 'N/A':<5} | {remaining or 'N/A':<9} | {format_date(reset):<19} | {period or 'N/A':<6} | {retry_after or 'N/A':<10} | {response_time:.0f}ms |")
+    print(color + f"| {request_num:<7} | {status_code:<6} | {limit or 'N/A':<5} | {remaining or 'N/A':<6} | {format_date(reset):<19} | {period or 'N/A':<6} | {retry_after or 'N/A':<5} | {response_time:.0f}ms |")
 
 def display_json(request_num, status_code, limit, remaining, reset, period, retry_after, response_time):
     return {
@@ -154,6 +171,10 @@ def make_request(args, headers, request_num):
 def main():
     args = parse_arguments()
 
+    if args.help_tags:
+        display_tag_help()
+        sys.exit(0)
+
     headers = {"Accept": "application/json"}
     if args.headers:
         for header in args.headers:
@@ -164,8 +185,8 @@ def main():
     print(f"Requests: {args.requests}, Delay: {args.delay} seconds, Concurrency: {args.concurrency}{Style.RESET_ALL}")
 
     if args.format == "table":
-        print("| Request  | Status Code | Limit | Remaining | Reset Time           | Period | Retry After | Response |")
-        print("|----------|-------------|-------|-----------|---------------------|--------|------------|----------|")
+        print("| Request | Status | Limit | Remain | Reset Time           | Period | Retry | Response |")
+        print("|---------|--------|-------|--------|---------------------|--------|-------|----------|")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as executor:
         futures = []
