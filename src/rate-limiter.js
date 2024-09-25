@@ -1,6 +1,11 @@
 import { generateFingerprint } from "./fingerprint.js";
 import { evaluateConditions } from "./condition-evaluator.js";
 
+// Constants
+const DEFAULT_STATUS_CODE = 200;
+const RATE_LIMIT_EXCEEDED_STATUS = 429;
+const STORAGE_PREFIX = "rate_limit:";
+
 export class RateLimiter {
   constructor(state, env) {
     this.state = state;
@@ -39,6 +44,10 @@ export class RateLimiter {
           throw new Error("Failed to identify client");
         });
 
+      console.log(
+        `RateLimiter: Processing request for client identifier: ${clientIdentifier}`,
+      );
+
       const initialMatches = await evaluateConditions(
         request,
         rule.initialMatch.conditions,
@@ -75,11 +84,21 @@ export class RateLimiter {
       );
     } catch (error) {
       console.error("RateLimiter: Unexpected error:", error);
-      return this.errorResponse("Unexpected error", 500);
+      return new Response(
+        JSON.stringify({
+          error: "Unexpected error",
+          message: error.message,
+        }),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
     }
   }
 
   async checkRateLimit(clientIdentifier, rule, now) {
+    // Using a sliding window for rate limiting
     const windowSize = rule.rateLimit.period * 1000;
     const limit = rule.rateLimit.limit;
 
@@ -136,7 +155,7 @@ export class RateLimiter {
       !rule.fingerprint?.parameters || rule.fingerprint.parameters.length === 0
     ) {
       console.log(`No fingerprint configured for rule: ${rule.name}`);
-      return `rate_limit:${rule.name}:default`;
+      return `${STORAGE_PREFIX}${rule.name}:default`;
     }
 
     try {
@@ -149,7 +168,7 @@ export class RateLimiter {
       console.log(
         `Generated fingerprint for rule ${rule.name}: ${fingerprint}`,
       );
-      return `rate_limit:${rule.name}:fingerprint:${fingerprint}`;
+      return `${STORAGE_PREFIX}${rule.name}:fingerprint:${fingerprint}`;
     } catch (error) {
       console.error(
         `Error generating fingerprint for rule ${rule.name}: ${error.message}`,
@@ -197,15 +216,16 @@ export class RateLimiter {
     console.log("Response body:", responseBody);
 
     const status = action.type === "customResponse"
-      ? action.statusCode || (isAllowed ? 200 : 429)
+      ? action.statusCode ||
+        (isAllowed ? DEFAULT_STATUS_CODE : RATE_LIMIT_EXCEEDED_STATUS)
       : isAllowed
-      ? 200
-      : 429;
+      ? DEFAULT_STATUS_CODE
+      : RATE_LIMIT_EXCEEDED_STATUS;
 
     return new Response(JSON.stringify(responseBody), { status, headers });
   }
 
-  errorResponse(message, status = 200) {
+  errorResponse(message, status = DEFAULT_STATUS_CODE) {
     return new Response(JSON.stringify({ error: message }), {
       status,
       headers: { "Content-Type": "application/json" },
@@ -240,7 +260,7 @@ export class RateLimiter {
       console.log("Rate limit info:", responseBody);
 
       return new Response(JSON.stringify(responseBody), {
-        status: 200,
+        status: DEFAULT_STATUS_CODE,
         headers: { "Content-Type": "application/json" },
       });
     } catch (error) {
