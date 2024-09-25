@@ -1,14 +1,14 @@
 export function serveRateLimitPage(env, request, rateLimitInfo) {
-  const acceptHeader = request.headers.get('Accept');
+  const acceptHeader = request.headers.get("Accept");
   const statusCode = 429; // Too Many Requests
 
   // Check if the request prefers HTML
-  if (!acceptHeader || !acceptHeader.includes('text/html')) {
+  if (!acceptHeader || !acceptHeader.includes("text/html")) {
     // Respond with JSON for non-browser clients
     return new Response(
       JSON.stringify({
         status: statusCode,
-        message: 'Rate limit exceeded',
+        message: "Rate limit exceeded",
         retryAfter: rateLimitInfo.retryAfter,
         limit: rateLimitInfo.limit,
         period: rateLimitInfo.period,
@@ -18,11 +18,11 @@ export function serveRateLimitPage(env, request, rateLimitInfo) {
       {
         status: statusCode,
         headers: {
-          'Content-Type': 'application/json',
-          'Cache-Control': 'no-store, max-age=0',
-          'Retry-After': rateLimitInfo.retryAfter.toString(),
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store, max-age=0",
+          "Retry-After": rateLimitInfo.retryAfter.toString(),
         },
-      }
+      },
     );
   }
 
@@ -90,19 +90,19 @@ export function serveRateLimitPage(env, request, rateLimitInfo) {
   return new Response(rateLimitPageContent, {
     status: statusCode,
     headers: {
-      'Content-Type': 'text/html',
-      'Cache-Control': 'no-store, max-age=0',
-      'Retry-After': rateLimitInfo.retryAfter.toString(),
+      "Content-Type": "text/html",
+      "Cache-Control": "no-store, max-age=0",
+      "Retry-After": rateLimitInfo.retryAfter.toString(),
     },
   });
 }
 
 export function serveRateLimitInfoPage(env, request, rateLimitInfo) {
-  const acceptHeader = request.headers.get('Accept');
+  const acceptHeader = request.headers.get("Accept");
   const statusCode = 200; // OK
 
   // Check if the request prefers HTML
-  if (!acceptHeader || !acceptHeader.includes('text/html')) {
+  if (!acceptHeader || !acceptHeader.includes("text/html")) {
     // Respond with JSON for non-browser clients
     return new Response(
       JSON.stringify({
@@ -115,10 +115,10 @@ export function serveRateLimitInfoPage(env, request, rateLimitInfo) {
       {
         status: statusCode,
         headers: {
-          'Content-Type': 'application/json',
-          'Cache-Control': 'no-store, max-age=0',
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store, max-age=0",
         },
-      }
+      },
     );
   }
 
@@ -157,7 +157,9 @@ export function serveRateLimitInfoPage(env, request, rateLimitInfo) {
             <div class="info-item">Limit: ${rateLimitInfo.limit} requests</div>
             <div class="info-item">Period: ${rateLimitInfo.period} seconds</div>
             <div class="info-item">Remaining: ${rateLimitInfo.remaining}</div>
-            <div class="info-item">Reset: ${new Date(rateLimitInfo.reset * 1000).toLocaleString()}</div>
+            <div class="info-item">Reset: ${
+    new Date(rateLimitInfo.reset * 1000).toLocaleString()
+  }</div>
             <p class="status-code">Status Code: ${statusCode}</p>
         </div>
     </body>
@@ -167,8 +169,8 @@ export function serveRateLimitInfoPage(env, request, rateLimitInfo) {
   return new Response(rateLimitInfoPageContent, {
     status: statusCode,
     headers: {
-      'Content-Type': 'text/html',
-      'Cache-Control': 'no-store, max-age=0',
+      "Content-Type": "text/html",
+      "Cache-Control": "no-store, max-age=0",
     },
   });
 }

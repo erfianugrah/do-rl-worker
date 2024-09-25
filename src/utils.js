@@ -2,17 +2,23 @@
 export async function hashValue(value) {
   const encoder = new TextEncoder();
   const data = encoder.encode(value);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
   const hashArray = Array.from(new Uint8Array(hashBuffer));
-  const hashHex = hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+  const hashHex = hashArray.map((b) => b.toString(16).padStart(2, "0")).join(
+    "",
+  );
   return hashHex;
 }
 
 export async function generateEncryptionKey() {
-  return await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, [
-    'encrypt',
-    'decrypt',
-  ]);
+  return await crypto.subtle.generateKey(
+    { name: "AES-GCM", length: 256 },
+    true,
+    [
+      "encrypt",
+      "decrypt",
+    ],
+  );
 }
 
 export async function encryptData(key, data) {
@@ -22,11 +28,11 @@ export async function encryptData(key, data) {
 
   const encryptedData = await crypto.subtle.encrypt(
     {
-      name: 'AES-GCM',
+      name: "AES-GCM",
       iv: iv,
     },
     key,
-    encodedData
+    encodedData,
   );
 
   return { encryptedData, iv };
@@ -35,11 +41,11 @@ export async function encryptData(key, data) {
 export async function decryptData(key, encryptedData, iv) {
   const decryptedData = await crypto.subtle.decrypt(
     {
-      name: 'AES-GCM',
+      name: "AES-GCM",
       iv: iv,
     },
     key,
-    encryptedData
+    encryptedData,
   );
 
   const decoder = new TextDecoder();
@@ -47,16 +53,16 @@ export async function decryptData(key, encryptedData, iv) {
 }
 
 export async function exportKey(key) {
-  const exported = await crypto.subtle.exportKey('raw', key);
+  const exported = await crypto.subtle.exportKey("raw", key);
   return Array.from(new Uint8Array(exported));
 }
 
 export async function importKey(keyData) {
   return await crypto.subtle.importKey(
-    'raw',
+    "raw",
     new Uint8Array(keyData),
-    { name: 'AES-GCM', length: 256 },
+    { name: "AES-GCM", length: 256 },
     true,
-    ['encrypt', 'decrypt']
+    ["encrypt", "decrypt"],
   );
 }
