@@ -1,4 +1,162 @@
+import { serveRateLimitPage } from "./staticpages.js";
+import { isValidRuleStructure } from "./config-manager.js";
+
 const BODY_SIZE_LIMIT = 524288; // 512 KB in bytes
+
+export async function findMatchingRule(request, config) {
+  console.log("Finding matching rule for request:", request.url);
+  if (!config || !Array.isArray(config.rules)) {
+    console.warn("Invalid config structure");
+    return null;
+  }
+
+  let lastLogOrSimulateAction = null;
+  let lastElseAction = null;
+
+  for (const rule of config.rules) {
+    console.log("Evaluating rule:", rule.name);
+
+    if (!isValidRuleStructure(rule)) {
+      continue;
+    }
+
+    const initialMatches = await evaluateConditions(
+      request,
+      rule.initialMatch.conditions,
+      "and", // Default to 'and' logic for initial match
+    );
+    console.log(`Initial match for rule ${rule.name}: ${initialMatches}`);
+
+    if (initialMatches) {
+      const actionType = rule.initialMatch.action.type;
+      if (actionType === "log" || actionType === "simulate") {
+        lastLogOrSimulateAction = {
+          ...rule,
+          actionType,
+          action: rule.initialMatch.action,
+        };
+        console.log(
+          `Rule ${rule.name} matched with ${actionType} action, continuing evaluation`,
+        );
+      } else {
+        console.log(`Rule ${rule.name} matched with action: ${actionType}`);
+        return { ...rule, actionType, action: rule.initialMatch.action };
+      }
+    } else if (rule.elseIfActions && rule.elseIfActions.length > 0) {
+      for (const elseIfAction of rule.elseIfActions) {
+        const elseIfMatches = await evaluateConditions(
+          request,
+          elseIfAction.conditions,
+          elseIfAction.logic || "and",
+        );
+        console.log(`Else-if match for rule ${rule.name}: ${elseIfMatches}`);
+        if (elseIfMatches) {
+          const actionType = elseIfAction.action.type;
+          if (actionType === "log" || actionType === "simulate") {
+            lastLogOrSimulateAction = {
+              ...rule,
+              actionType,
+              action: elseIfAction.action,
+            };
+            console.log(
+              `Rule ${rule.name} else-if matched with ${actionType} action, continuing evaluation`,
+            );
+          } else {
+            console.log(
+              `Rule ${rule.name} else-if matched with action: ${actionType}`,
+            );
+            return { ...rule, actionType, action: elseIfAction.action };
+          }
+        }
+      }
+    }
+
+    if (rule.elseAction) {
+      lastElseAction = {
+        ...rule,
+        actionType: rule.elseAction.type,
+        action: rule.elseAction,
+      };
+      console.log(`Rule ${rule.name} else action stored as potential fallback`);
+    }
+
+    console.log(`Finished evaluating rule ${rule.name}`);
+  }
+
+  // If we've reached here, no non-log/non-simulate actions were matched
+  if (lastElseAction) {
+    console.log(`Applying else action from rule: ${lastElseAction.name}`);
+    return lastElseAction;
+  }
+
+  return lastLogOrSimulateAction;
+}
+
+export const actionHandlers = {
+  log: (request) => {
+    console.log("Logging rate limit exceed");
+    return fetch(request);
+  },
+  simulate: async (request) => {
+    console.log("Simulating rate limit exceed");
+    const response = await fetch(request);
+    const newResponse = new Response(response.body, response);
+    newResponse.headers.set("X-Rate-Limit-Simulated", "true");
+    return newResponse;
+  },
+  block: () => {
+    console.log("Blocking request due to rate limit");
+    return new Response("Forbidden", { status: 403 });
+  },
+  customResponse: (env, request, rateLimitInfo, matchingRule) => {
+    console.log("Applying custom response");
+    return new Response(matchingRule.action.body, {
+      status: parseInt(matchingRule.action.statusCode),
+      headers: {
+        "Content-Type": matchingRule.action.bodyType === "json"
+          ? "application/json"
+          : matchingRule.action.bodyType === "html"
+          ? "text/html"
+          : "text/plain",
+      },
+    });
+  },
+  rateLimit: (env, request, rateLimitInfo, matchingRule) => {
+    console.log("Applying rate limit action");
+    if (
+      matchingRule.action && matchingRule.action.statusCode &&
+      matchingRule.action.body
+    ) {
+      // Use custom response if defined in the rule
+      return new Response(matchingRule.action.body, {
+        status: parseInt(matchingRule.action.statusCode),
+        headers: {
+          "Content-Type": matchingRule.action.bodyType === "json"
+            ? "application/json"
+            : matchingRule.action.bodyType === "html"
+            ? "text/html"
+            : "text/plain",
+        },
+      });
+    }
+    // Default rate limit behavior
+    return request.headers.get("Accept")?.includes("text/html")
+      ? serveRateLimitPage(env, request, rateLimitInfo)
+      : new Response(
+        JSON.stringify({
+          error: "Rate limit exceeded",
+          retryAfter: rateLimitInfo.retryAfter,
+        }),
+        {
+          status: 429,
+          headers: {
+            "Content-Type": "application/json",
+            "Retry-After": rateLimitInfo.retryAfter.toString(),
+          },
+        },
+      );
+  },
+};
 
 function isIPInCIDR(ip, cidr) {
   const [range, bits = 32] = cidr.split("/");
