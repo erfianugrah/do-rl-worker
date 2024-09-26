@@ -1,9 +1,8 @@
-#!/usr/bin/env python3
-
 import argparse
 import requests
 import time
 import json
+import csv
 import statistics
 from datetime import datetime
 from colorama import Fore, Style, init
@@ -32,6 +31,8 @@ def parse_arguments():
     parser.add_argument("-L", "--follow-redirects", action="store_true", help="Follow redirects")
     parser.add_argument("-c", "--concurrency", type=int, default=10, help="Number of concurrent requests")
     parser.add_argument("--help-tags", action="store_true", help="Display help for output tags")
+    parser.add_argument("--json-output", help="Output results to a JSON file")
+    parser.add_argument("--csv-output", help="Output results to a CSV file")
     return parser.parse_args()
 
 def display_tag_help():
@@ -66,18 +67,6 @@ def format_date(timestamp):
 def display_table(request_num, status_code, limit, remaining, reset, period, retry_after, response_time):
     color = Fore.RED if status_code == 429 else Fore.GREEN
     print(color + f"| {request_num:<7} | {status_code:<6} | {limit or 'N/A':<5} | {remaining or 'N/A':<6} | {format_date(reset):<19} | {period or 'N/A':<6} | {retry_after or 'N/A':<5} | {response_time:.0f}ms |")
-
-def display_json(request_num, status_code, limit, remaining, reset, period, retry_after, response_time):
-    return {
-        "request_num": request_num,
-        "status_code": status_code,
-        "limit": limit or "N/A",
-        "remaining": remaining or "N/A",
-        "reset": format_date(reset),
-        "period": period or "N/A",
-        "retry_after": retry_after or "N/A",
-        "response_time": f"{response_time:.0f}ms"
-    }
 
 def display_csv(request_num, status_code, limit, remaining, reset, period, retry_after, response_time):
     return f"{request_num},{status_code},{limit or 'N/A'},{remaining or 'N/A'},{format_date(reset)},{period or 'N/A'},{retry_after or 'N/A'},{response_time:.0f}"
@@ -226,8 +215,7 @@ def make_request(args, headers, request_num):
         "reset": reset,
         "period": period,
         "retry_after": retry_after,
-        "response_time": response_time,
-        "response": response
+        "response_time": response_time
     }
 
     with result_lock:
@@ -248,6 +236,18 @@ def make_request(args, headers, request_num):
         print(f"{Fore.BLUE}------------------------{Style.RESET_ALL}")
 
     return result
+
+def write_json_file(data, filename):
+    with open(filename, 'w') as f:
+        json.dump(data, f, indent=2)
+    print(f"\n{Fore.BLUE}Results saved to JSON file: {filename}{Style.RESET_ALL}")
+
+def write_csv_file(data, filename):
+    with open(filename, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=data[0].keys())
+        writer.writeheader()
+        writer.writerows(data)
+    print(f"\n{Fore.BLUE}Results saved to CSV file: {filename}{Style.RESET_ALL}")
 
 def main():
     args = parse_arguments()
@@ -280,9 +280,16 @@ def main():
 
     results.sort(key=lambda x: x["request_num"])
 
+    json_output = results  # No need for conversion, as the results are already in the correct format
+
     if args.format == "json":
-        json_output = [display_json(**r) for r in results]
         print(json.dumps(json_output, indent=2))
+
+    if args.json_output:
+        write_json_file(json_output, args.json_output)
+
+    if args.csv_output:
+        write_csv_file(json_output, args.csv_output)
 
     response_times = [r["response_time"] for r in results]
     status_codes = [r["status_code"] for r in results]
