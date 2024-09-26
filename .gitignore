@@ -173,3 +173,6 @@ dist
 
 # python venv
 venv
+
+# rate-limiter-results
+rate_limiter_test_results.png

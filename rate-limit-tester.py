@@ -10,6 +10,8 @@ from colorama import Fore, Style, init
 import concurrent.futures
 import threading
 import sys
+import numpy as np
+import matplotlib.pyplot as plt
 
 # Initialize colorama
 init(autoreset=True)
@@ -87,14 +89,20 @@ def calculate_statistics(times, codes):
     mean_time = statistics.mean(times)
     median_time = statistics.median(times)
     std_dev = statistics.stdev(times) if len(times) > 1 else 0
-    p95 = statistics.quantiles(times, n=20)[-1] if len(times) >= 20 else max(times)  # 95th percentile
+    percentiles = np.percentile(times, [50, 75, 90, 95, 99])
 
     print(f"\n{Fore.BLUE}Statistical Analysis:{Style.RESET_ALL}")
     print(f"  Mean Response Time: {mean_time:.2f}ms")
     print(f"  Median Response Time: {median_time:.2f}ms")
     print(f"  Standard Deviation: {std_dev:.2f}ms")
-    print(f"  95th Percentile: {p95:.2f}ms")
+    print(f"  50th Percentile: {percentiles[0]:.2f}ms")
+    print(f"  75th Percentile: {percentiles[1]:.2f}ms")
+    print(f"  90th Percentile: {percentiles[2]:.2f}ms")
+    print(f"  95th Percentile: {percentiles[3]:.2f}ms")
+    print(f"  99th Percentile: {percentiles[4]:.2f}ms")
     print(f"  Success Rate: {success_rate:.2f}%")
+
+    return percentiles
 
 def generate_chart(times, codes):
     max_height = 20
@@ -122,6 +130,79 @@ def generate_chart(times, codes):
         print(row)
     print("-" * width)
     print("Success (█) vs Rate Limited (▄)")
+
+def generate_graph(times, codes, percentiles):
+    plt.figure(figsize=(15, 10))
+
+    # Response time distribution
+    plt.subplot(2, 1, 1)
+    plt.hist(times, bins=50, edgecolor='black', alpha=0.7)
+    plt.title('Response Time Distribution', fontsize=16)
+    plt.xlabel('Response Time (ms)', fontsize=12)
+    plt.ylabel('Frequency', fontsize=12)
+
+    # Add vertical lines for percentiles and max outlier
+    colors = ['r', 'g', 'b', 'c', 'm', 'y']
+    labels = ['50th', '75th', '90th', '95th', '99th', 'Max']
+    all_percentiles = list(percentiles) + [max(times)]
+
+    for i, percentile in enumerate(all_percentiles):
+        plt.axvline(percentile, color=colors[i], linestyle='dashed', linewidth=2,
+                    label=f'{labels[i]} Percentile: {percentile:.2f}ms')
+
+    plt.legend(fontsize=10, loc='upper right')
+    plt.grid(True, linestyle='--', alpha=0.7)
+
+    # Adjust x-axis to show the full range including the max outlier
+    plt.xlim(0, max(times) * 1.05)  # Add 5% padding to the right
+
+    # Status code distribution
+    plt.subplot(2, 1, 2)
+    status_counts = {code: codes.count(code) for code in set(codes)}
+    bars = plt.bar(status_counts.keys(), status_counts.values(), edgecolor='black')
+    plt.title('Status Code Distribution', fontsize=16)
+    plt.xlabel('Status Code', fontsize=12)
+    plt.ylabel('Count', fontsize=12)
+
+    # Add value labels on top of each bar
+    for bar in bars:
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width()/2., height,
+                 f'{height}',
+                 ha='center', va='bottom')
+
+    plt.grid(True, linestyle='--', alpha=0.7, axis='y')
+
+    # Adjust layout and save
+    plt.tight_layout()
+    plt.savefig('rate_limit_test_results.png', dpi=300)
+    print(f"\n{Fore.BLUE}Graph saved as rate_limit_test_results.png{Style.RESET_ALL}")
+
+    # Display additional statistics
+    total_requests = len(codes)
+    success_count = codes.count(200)
+    success_rate = (success_count / total_requests) * 100
+    rate_limited = codes.count(429)
+
+    print(f"\n{Fore.BLUE}Additional Statistics:{Style.RESET_ALL}")
+    print(f"  Total Requests: {total_requests}")
+    print(f"  Successful Requests (200): {success_count} ({success_rate:.2f}%)")
+    print(f"  Rate Limited Requests (429): {rate_limited} ({(rate_limited/total_requests)*100:.2f}%)")
+    print(f"  Other Status Codes:")
+    for code, count in status_counts.items():
+        if code not in [200, 429]:
+            print(f"    {code}: {count} ({(count/total_requests)*100:.2f}%)")
+
+    # Calculate and display average response times
+    success_times = [t for t, c in zip(times, codes) if c == 200]
+    rate_limited_times = [t for t, c in zip(times, codes) if c == 429]
+
+    print(f"\n{Fore.BLUE}Response Time Statistics:{Style.RESET_ALL}")
+    print(f"  All Requests: Avg = {sum(times) / len(times):.2f}ms, Max = {max(times):.2f}ms")
+    if success_times:
+        print(f"  Successful Requests: Avg = {sum(success_times) / len(success_times):.2f}ms, Max = {max(success_times):.2f}ms")
+    if rate_limited_times:
+        print(f"  Rate Limited Requests: Avg = {sum(rate_limited_times) / len(rate_limited_times):.2f}ms, Max = {max(rate_limited_times):.2f}ms")
 
 def make_request(args, headers, request_num):
     start_time = time.time()
@@ -206,8 +287,9 @@ def main():
     response_times = [r["response_time"] for r in results]
     status_codes = [r["status_code"] for r in results]
 
-    calculate_statistics(response_times, status_codes)
+    percentiles = calculate_statistics(response_times, status_codes)
     generate_chart(response_times, status_codes)
+    generate_graph(response_times, status_codes, percentiles)
 
     print(f"\n{Fore.GREEN}Test completed.{Style.RESET_ALL}")
 
