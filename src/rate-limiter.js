@@ -1,7 +1,6 @@
 import { generateFingerprint } from "./fingerprint.js";
 import { evaluateConditions } from "./condition-evaluator.js";
 
-// Constants
 const DEFAULT_STATUS_CODE = 200;
 const RATE_LIMIT_EXCEEDED_STATUS = 429;
 const STORAGE_PREFIX = "rate_limit:";
@@ -13,6 +12,7 @@ export class RateLimiter {
   }
 
   async fetch(request) {
+    const fetchStartTime = Date.now();
     console.log("RateLimiter: Received request");
     const rule = this.parseRule(request);
     if (!rule) {
@@ -94,19 +94,29 @@ export class RateLimiter {
           headers: { "Content-Type": "application/json" },
         },
       );
+    } finally {
+      console.log(
+        `RateLimiter: Total fetch processing time: ${
+          Date.now() - fetchStartTime
+        }ms`,
+      );
     }
   }
 
   async checkRateLimit(clientIdentifier, rule, now) {
-    // Using a sliding window for rate limiting
+    const startTime = Date.now();
     const windowSize = rule.rateLimit.period * 1000;
     const limit = rule.rateLimit.limit;
 
     let data = await this.state.storage.get(clientIdentifier);
-    let timestamps = data ? JSON.parse(data) : [];
+    console.log(`Storage get took ${Date.now() - startTime}ms`);
 
+    let timestamps = data ? JSON.parse(data) : [];
     const windowStart = now - windowSize;
+
+    const filterStart = Date.now();
     timestamps = timestamps.filter((ts) => ts >= windowStart);
+    console.log(`Timestamp filtering took ${Date.now() - filterStart}ms`);
 
     const isAllowed = timestamps.length < limit;
     if (isAllowed) {
@@ -115,10 +125,15 @@ export class RateLimiter {
 
     timestamps = timestamps.slice(-limit);
 
+    const storageStart = Date.now();
     await this.state.storage.put(clientIdentifier, JSON.stringify(timestamps));
+    console.log(`Storage put took ${Date.now() - storageStart}ms`);
 
     const oldestTimestamp = timestamps[0] || now;
     const resetTime = Math.max(oldestTimestamp + windowSize, now + 1000);
+
+    const totalTime = Date.now() - startTime;
+    console.log(`Total checkRateLimit time: ${totalTime}ms`);
 
     return {
       isAllowed,

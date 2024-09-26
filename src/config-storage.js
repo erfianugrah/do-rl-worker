@@ -10,6 +10,7 @@ export class ConfigStorage {
   }
 
   async fetch(request) {
+    const startTime = Date.now();
     const url = new URL(request.url);
     const path = url.pathname;
 
@@ -17,26 +18,51 @@ export class ConfigStorage {
       `ConfigStorage: Received ${request.method} request for path: ${path}`,
     );
 
-    switch (request.method) {
-      case "GET":
-        console.log("ConfigStorage: Handling GET request");
-        return this.handleGet(path);
-      case "POST":
-        console.log("ConfigStorage: Handling POST request");
-        return this.handlePost(request);
-      case "PUT":
-        console.log("ConfigStorage: Handling PUT request");
-        return this.handlePut(request, path);
-      case "DELETE":
-        console.log("ConfigStorage: Handling DELETE request");
-        return this.handleDelete(path);
-      default:
-        console.log(`ConfigStorage: Method not allowed: ${request.method}`);
-        return new Response(JSON.stringify({ error: "Method not allowed" }), {
-          status: 405,
+    let response;
+    try {
+      switch (request.method) {
+        case "GET":
+          console.log("ConfigStorage: Handling GET request");
+          response = await this.handleGet(path);
+          break;
+        case "POST":
+          console.log("ConfigStorage: Handling POST request");
+          response = await this.handlePost(request);
+          break;
+        case "PUT":
+          console.log("ConfigStorage: Handling PUT request");
+          response = await this.handlePut(request, path);
+          break;
+        case "DELETE":
+          console.log("ConfigStorage: Handling DELETE request");
+          response = await this.handleDelete(path);
+          break;
+        default:
+          console.log(`ConfigStorage: Method not allowed: ${request.method}`);
+          response = new Response(
+            JSON.stringify({ error: "Method not allowed" }),
+            {
+              status: 405,
+              headers: { "Content-Type": "application/json" },
+            },
+          );
+      }
+    } catch (error) {
+      console.error("ConfigStorage: Error handling request:", error);
+      response = new Response(
+        JSON.stringify({ error: "Internal server error" }),
+        {
+          status: 500,
           headers: { "Content-Type": "application/json" },
-        });
+        },
+      );
     }
+
+    const endTime = Date.now();
+    console.log(
+      `ConfigStorage: fetch took ${endTime - startTime}ms for ${request.url}`,
+    );
+    return response;
   }
 
   async handleGet(path) {

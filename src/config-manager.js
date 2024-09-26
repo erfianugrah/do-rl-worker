@@ -5,9 +5,11 @@ const CONFIG_CACHE_TTL = 60 * 1000; // 1 minute
 export async function getConfig(env) {
   const now = Date.now();
   if (cachedConfig && now - lastConfigFetch < CONFIG_CACHE_TTL) {
+    console.log(`Config cache hit. Age: ${now - lastConfigFetch}ms`);
     return cachedConfig;
   }
 
+  console.log(`Config cache miss. Fetching new config...`);
   try {
     const configStorageId = env.CONFIG_STORAGE.idFromName("global");
     const configStorage = env.CONFIG_STORAGE.get(configStorageId);
@@ -31,6 +33,7 @@ export async function getConfig(env) {
 
     cachedConfig = config;
     lastConfigFetch = now;
+    console.log(`New config fetched and cached at ${now}`);
     return cachedConfig;
   } catch (error) {
     console.error("Error fetching config:", error);

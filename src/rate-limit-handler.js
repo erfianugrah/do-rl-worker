@@ -1,4 +1,5 @@
 export async function handleRateLimit(request, env, matchingRule) {
+  const startTime = Date.now();
   const rateLimiterId = env.RATE_LIMITER.idFromName("global");
   const rateLimiter = env.RATE_LIMITER.get(rateLimiterId);
 
@@ -25,10 +26,13 @@ export async function handleRateLimit(request, env, matchingRule) {
   });
 
   const rateLimitResponse = await rateLimiter.fetch(rateLimiterRequest);
+  const endTime = Date.now();
+  console.log(`handleRateLimit took ${endTime - startTime}ms`);
   return { rateLimitInfo: await rateLimitResponse.json(), rateLimitResponse };
 }
 
 export function applyRateLimitHeaders(response, rateLimitResponse) {
+  const startTime = Date.now();
   const newHeaders = new Headers(response.headers);
   [
     "X-Rate-Limit-Remaining",
@@ -43,6 +47,8 @@ export function applyRateLimitHeaders(response, rateLimitResponse) {
     }
   });
 
+  const endTime = Date.now();
+  console.log(`applyRateLimitHeaders took ${endTime - startTime}ms`);
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,

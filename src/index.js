@@ -10,6 +10,7 @@ import { getConfig } from "./config-manager.js";
 
 export default {
   async fetch(request, env, ctx) {
+    const startTime = Date.now();
     console.log("Received request for URL:", request.url);
     const url = new URL(request.url);
 
@@ -28,6 +29,7 @@ export default {
 
     try {
       const config = await getConfig(env);
+      console.log(`Config fetched in ${Date.now() - startTime}ms`);
 
       if (!config || !config.rules || config.rules.length === 0) {
         console.log(
@@ -36,7 +38,9 @@ export default {
         return fetch(request);
       }
 
+      const matchingRuleStart = Date.now();
       const matchingRule = await findMatchingRule(request, config);
+      console.log(`Matching rule found in ${Date.now() - matchingRuleStart}ms`);
 
       if (!matchingRule) {
         console.log(
@@ -58,11 +62,13 @@ export default {
         return serveRateLimitInfoPage(env, request, rateLimitInfo);
       }
 
+      const rateLimitStart = Date.now();
       const { rateLimitInfo, rateLimitResponse } = await handleRateLimit(
         request,
         env,
         matchingRule,
       );
+      console.log(`Rate limit checked in ${Date.now() - rateLimitStart}ms`);
 
       let response;
       if (rateLimitInfo.allowed) {
@@ -86,7 +92,11 @@ export default {
         );
       }
 
-      return applyRateLimitHeaders(response, rateLimitResponse);
+      const finalResponse = applyRateLimitHeaders(response, rateLimitResponse);
+
+      const totalTime = Date.now() - startTime;
+      console.log(`Total request processing time: ${totalTime}ms`);
+      return finalResponse;
     } catch (error) {
       console.error("Error in rate limiting:", error);
       return fetch(request); // Pass through on error
