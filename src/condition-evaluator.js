@@ -1,4 +1,4 @@
-import { serveRateLimitPage } from "./staticpages.js";
+import { serveRateLimitPage } from "./staticpages.ts";
 import { isValidRuleStructure } from "./config-manager.js";
 
 const BODY_SIZE_LIMIT = 524288; // 512 KB in bytes

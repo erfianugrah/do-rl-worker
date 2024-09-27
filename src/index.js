@@ -1,5 +1,5 @@
 import { RateLimiter } from "./rate-limiter.js";
-import { serveRateLimitInfoPage, serveRateLimitPage } from "./staticpages.js";
+import { serveRateLimitInfoPage, serveRateLimitPage } from "./staticpages.ts";
 import { actionHandlers, findMatchingRule } from "./condition-evaluator.js";
 import {
   applyRateLimitHeaders,

@@ -1,6 +1,6 @@
 let cachedConfig = null;
 let lastConfigFetch = 0;
-const CONFIG_CACHE_TTL = 60 * 1000; // 1 minute
+const CONFIG_CACHE_TTL = 5 * 1000;
 let isRefreshing = false;
 
 export async function getConfig(env) {
@@ -58,7 +58,7 @@ export async function backgroundRefresh(env) {
     } catch (error) {
       console.error("Error in background refresh:", error);
     }
-    await new Promise((resolve) => setTimeout(resolve, 30000)); // Check every 30 seconds
+    await new Promise((resolve) => setTimeout(resolve, 5000));
   }
 }
 
