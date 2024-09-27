@@ -112,7 +112,7 @@ const parameterExtractors = {
   },
 };
 
-xport async function generateFingerprint(
+export async function generateFingerprint(
   request,
   env,
   fingerprintConfig,
