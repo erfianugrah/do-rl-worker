@@ -112,7 +112,7 @@ const parameterExtractors = {
   },
 };
 
-export async function generateFingerprint(
+xport async function generateFingerprint(
   request,
   env,
   fingerprintConfig,
@@ -124,7 +124,6 @@ export async function generateFingerprint(
   );
   console.log("Fingerprint: CF object:", JSON.stringify(cfData, null, 2));
 
-  const timestamp = Math.floor(Date.now() / 1000);
   const parameters = fingerprintConfig.parameters || [];
 
   const components = await Promise.all(
@@ -140,6 +139,17 @@ export async function generateFingerprint(
       }
 
       const value = await extractor(request, param, cfData);
+      if (param.name === "headers.nameValue") {
+        console.log(
+          `Headers for fingerprint:`,
+          JSON.stringify(Object.fromEntries(request.headers)),
+        );
+        console.log(
+          `Fingerprint header check: ${param.headerName}=${
+            request.headers.get(param.headerName)
+          }, Expected: ${param.headerValue}`,
+        );
+      }
       console.log(
         `Fingerprint parameter ${param.name}:`,
         value !== undefined ? value : "(undefined)",
@@ -148,8 +158,6 @@ export async function generateFingerprint(
     }),
   );
 
-  components.push(timestamp.toString());
-  console.log("Added timestamp to fingerprint components:", timestamp);
   console.log("Final fingerprint components:", components);
 
   const fingerprint = await hashValue(components.join("|"));
