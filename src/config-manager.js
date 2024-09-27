@@ -1,17 +1,13 @@
 let cachedConfig = null;
 let lastConfigFetch = 0;
-const CONFIG_CACHE_TTL = 5 * 1000;
-let isRefreshing = false;
+// const CONFIG_CACHE_TTL = 5 * 1000;
+// let isRefreshing = false;
 
 export async function getConfig(env) {
-  const now = Date.now();
-  if (cachedConfig && now - lastConfigFetch < CONFIG_CACHE_TTL) {
-    console.log(`Config cache hit. Age: ${now - lastConfigFetch}ms`);
-    return cachedConfig;
+  if (!cachedConfig) {
+    await fetchAndUpdateConfig(env);
   }
-
-  console.log(`Config cache miss. Fetching new config...`);
-  return await fetchAndUpdateConfig(env);
+  return cachedConfig;
 }
 
 async function fetchAndUpdateConfig(env) {
@@ -42,25 +38,25 @@ async function fetchAndUpdateConfig(env) {
   }
 }
 
-export async function backgroundRefresh(env) {
-  if (isRefreshing) return;
-  isRefreshing = true;
-
-  while (true) {
-    try {
-      const now = Date.now();
-      if (now - lastConfigFetch >= CONFIG_CACHE_TTL) {
-        console.log("Background refresh: Fetching new config...");
-        await fetchAndUpdateConfig(env);
-      } else {
-        console.log("Background refresh: Config is still fresh");
-      }
-    } catch (error) {
-      console.error("Error in background refresh:", error);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 5000));
-  }
-}
+// export async function backgroundRefresh(env) {
+//   if (isRefreshing) return;
+//   isRefreshing = true;
+//
+//   while (true) {
+//     try {
+//       const now = Date.now();
+//       if (now - lastConfigFetch >= CONFIG_CACHE_TTL) {
+//         console.log("Background refresh: Fetching new config...");
+//         await fetchAndUpdateConfig(env);
+//       } else {
+//         console.log("Background refresh: Config is still fresh");
+//       }
+//     } catch (error) {
+//       console.error("Error in background refresh:", error);
+//     }
+//     await new Promise((resolve) => setTimeout(resolve, 5000));
+//   }
+// }
 
 export function isValidRuleStructure(rule) {
   if (!rule.initialMatch) {

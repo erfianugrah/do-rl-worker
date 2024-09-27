@@ -5,18 +5,12 @@ import {
   applyRateLimitHeaders,
   handleRateLimit,
 } from "./rate-limit-handler.js";
-import { backgroundRefresh, getConfig } from "./config-manager.js";
+import { getConfig } from "./config-manager.js";
 
 export default {
   async fetch(request, env, ctx) {
     console.log("Received request for URL:", request.url);
     const url = new URL(request.url);
-
-    if (url.pathname === "/config") {
-      const configStorageId = env.CONFIG_STORAGE.idFromName("global");
-      const configStorage = env.CONFIG_STORAGE.get(configStorageId);
-      return configStorage.fetch(request);
-    }
 
     if (request.headers.get("X-Serve-Rate-Limit-Page") === "true") {
       const rateLimitInfo = JSON.parse(
@@ -25,18 +19,17 @@ export default {
       return serveRateLimitPage(env, request, rateLimitInfo);
     }
 
-    // Start background refresh if not already running
-    ctx.waitUntil(backgroundRefresh(env));
-
     try {
       const config = await getConfig(env);
 
-      if (!config || !config.rules || config.rules.length === 0) {
+      if (!config || config.length === 0) {
         console.log(
           "No rate limiting rules configured, passing through request",
         );
         return fetch(request);
       }
+
+      console.log(`Loaded ${config.length} rate limiting rules`);
 
       const matchingRule = await findMatchingRule(request, config);
 
@@ -48,7 +41,7 @@ export default {
       }
 
       console.log("Request matches criteria for rule:", matchingRule.name);
-      console.log("Action type:", matchingRule.actionType);
+      console.log("Action type:", matchingRule.initialMatch.action.type);
 
       if (url.pathname === env.RATE_LIMIT_INFO_PATH) {
         console.log("Serving rate limit info page");
@@ -71,16 +64,16 @@ export default {
         console.log("Rate limit not exceeded, forwarding request");
         response = await fetch(request);
 
-        if (matchingRule.actionType === "simulate") {
+        if (matchingRule.initialMatch.action.type === "simulate") {
           response = new Response(response.body, response);
           response.headers.set("X-Rate-Limit-Simulated", "false");
         }
       } else {
         console.log(
           "Rate limit exceeded, applying action:",
-          matchingRule.actionType,
+          matchingRule.initialMatch.action.type,
         );
-        response = await actionHandlers[matchingRule.actionType](
+        response = await actionHandlers[matchingRule.initialMatch.action.type](
           env,
           request,
           rateLimitInfo,
@@ -92,6 +85,24 @@ export default {
     } catch (error) {
       console.error("Error in rate limiting:", error);
       return fetch(request); // Pass through on error
+    }
+  },
+
+  async queue(batch, env, ctx) {
+    console.log(`Received ${batch.messages.length} messages from the queue`);
+    for (const message of batch.messages) {
+      try {
+        if (message.body && message.body.type === "config_update") {
+          console.log("Received config update notification");
+          await getConfig(env);
+          await message.ack();
+        } else {
+          console.log("Received unexpected message type:", message.body?.type);
+          await message.ack();
+        }
+      } catch (error) {
+        console.error("Error processing queue message:", error);
+      }
     }
   },
 };
