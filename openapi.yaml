@@ -8,10 +8,8 @@ info:
     as well as manage rule versions.
 
 servers:
-  - url: https://do-rl-worker.anugrah.workers.dev/
+  - url: https://api.rate-limiter.erfianugrah.com
     description: Production server
-  - url: https://do-rl-worker.anugrah.workers.dev/
-    description: Development server
 
 paths:
   /config:

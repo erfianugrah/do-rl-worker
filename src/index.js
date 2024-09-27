@@ -1,5 +1,4 @@
 import { RateLimiter } from "./rate-limiter.js";
-import { ConfigStorage } from "./config-storage.js";
 import { serveRateLimitInfoPage, serveRateLimitPage } from "./staticpages.js";
 import { actionHandlers, findMatchingRule } from "./condition-evaluator.js";
 import {
@@ -104,4 +103,4 @@ export default {
   },
 };
 
-export { ConfigStorage, RateLimiter };
+export { RateLimiter };
