@@ -13,6 +13,12 @@ mode = "smart"
 [vars]
 RATE_LIMIT_INFO_PATH = "/_ratelimit"
 
+[[queues.consumers]]
+queue = "config-update-queue"
+max_batch_size = 100
+max_batch_timeout = 1
+max_retries = 10
+
 [durable_objects]
 bindings = [
   { name = "RATE_LIMITER", class_name = "RateLimiter" },
